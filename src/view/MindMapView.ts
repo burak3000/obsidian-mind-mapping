@@ -14,6 +14,8 @@ import { assignMissingSides } from "../layout/sides";
 import { ensurePersistentIds } from "../sync/metadata";
 import { LinkKind, buildLinkText, getSoleLink } from "../model/links";
 import { LinkModal } from "./LinkModal";
+import { SearchPanel } from "./SearchPanel";
+import { searchNodes } from "../model/search";
 import { MindMapSettings } from "../settings/PluginSettings";
 import { LayoutConfig } from "../layout/layoutEngine";
 import { SerializeConfig } from "../sync/serializer";
@@ -37,6 +39,7 @@ export class MindMapView extends TextFileView implements ControllerListener {
 	private controller: Controller | null = null;
 	private renderer: SvgRenderer | null = null;
 	private inlineEditor: InlineEditor | null = null;
+	private searchPanel: SearchPanel | null = null;
 	private lastWrittenText = "";
 	private readonly scheduleWrite: ReturnType<typeof debounce>;
 
@@ -82,6 +85,8 @@ export class MindMapView extends TextFileView implements ControllerListener {
 		this.scheduleWrite.cancel();
 		this.inlineEditor?.destroy();
 		this.inlineEditor = null;
+		this.searchPanel?.destroy();
+		this.searchPanel = null;
 		this.renderer?.destroy();
 		this.renderer = null;
 		this.controller = null;
@@ -93,11 +98,13 @@ export class MindMapView extends TextFileView implements ControllerListener {
 		this.registerDomEvent(this.contentEl, "keydown", (evt) => this.onKeyDown(evt));
 		this.registerDomEvent(this.contentEl, "mousedown", () => this.contentEl.focus());
 		this.registerEvent(this.app.vault.on("modify", (file) => this.onVaultModify(file)));
+		this.addAction("search", "Search mind map", () => this.toggleSearch());
 	}
 
 	onunload(): void {
 		this.scheduleWrite.cancel();
 		this.inlineEditor?.destroy();
+		this.searchPanel?.destroy();
 		this.renderer?.destroy();
 	}
 
@@ -114,6 +121,8 @@ export class MindMapView extends TextFileView implements ControllerListener {
 
 		this.inlineEditor?.destroy();
 		this.inlineEditor = null;
+		this.searchPanel?.destroy();
+		this.searchPanel = null;
 		this.controller = new Controller(model);
 		this.controller.addListener(this);
 
@@ -219,11 +228,53 @@ export class MindMapView extends TextFileView implements ControllerListener {
 		this.controller?.rebalance();
 	}
 
+	// --- Search ---
+
+	/** Exposed for main.ts's Obsidian command and the header search action. Opens the panel, or just refocuses it if it's already open — same as a browser's find-in-page shortcut. */
+	toggleSearch(): void {
+		if (this.searchPanel) {
+			this.searchPanel.focus();
+			return;
+		}
+		this.openSearchPanel();
+	}
+
+	private openSearchPanel(): void {
+		if (!this.controller) return;
+		this.searchPanel = new SearchPanel(this.contentEl, {
+			onQuery: (query) => searchNodes(this.controller!.model.root, query),
+			onSelect: (nodeId) => this.focusNode(nodeId),
+			onClose: () => this.closeSearchPanel(),
+		});
+	}
+
+	private closeSearchPanel(): void {
+		this.searchPanel?.destroy();
+		this.searchPanel = null;
+		this.contentEl.focus();
+	}
+
+	/** Unfolds whatever's hiding a node (if anything), selects it, and pans the view to center it — used for both search results and (later) any other "jump to a node that might be off-screen" need. */
+	private focusNode(nodeId: string): void {
+		if (!this.controller || !this.renderer) return;
+		this.controller.revealAndSelect(nodeId);
+		const node = this.controller.model.byId.get(nodeId);
+		if (node?.layout) {
+			this.renderer.centerOnWorldPoint(node.layout.x + node.layout.w / 2, node.layout.y + node.layout.h / 2);
+		}
+	}
+
 	// --- Keyboard shortcuts (plan §8) ---
 
 	private onKeyDown(evt: KeyboardEvent): void {
 		if (this.inlineEditor || !this.controller) return; // InlineEditor owns keys while editing
 		const mod = evt.ctrlKey || evt.metaKey;
+
+		if (mod && evt.key.toLowerCase() === "f") {
+			evt.preventDefault();
+			this.toggleSearch();
+			return;
+		}
 
 		if (evt.key === "Tab") {
 			evt.preventDefault();

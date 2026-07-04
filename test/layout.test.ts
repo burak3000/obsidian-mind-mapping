@@ -1,36 +1,62 @@
 import { describe, expect, it } from "vitest";
 import { parseMindMap } from "../src/sync/parser";
-import { computeLayout, computeNodeBox, estimateNodeWidth, DEFAULT_LAYOUT_CONFIG } from "../src/layout/layoutEngine";
+import { computeLayout, computeNodeBox, estimateNodeWidth, fontSizeForDepth, scaleForDepth, defaultWrapWidthForDepth, DEFAULT_LAYOUT_CONFIG } from "../src/layout/layoutEngine";
 import { assignMissingSides } from "../src/layout/sides";
 
+describe("fontSizeForDepth (R15: visual hierarchy by size)", () => {
+	it("is largest at the root and strictly decreases for a few levels", () => {
+		const sizes = [0, 1, 2, 3].map((d) => fontSizeForDepth(d, DEFAULT_LAYOUT_CONFIG));
+		expect(sizes[0]).toBe(DEFAULT_LAYOUT_CONFIG.rootFontSize);
+		for (let i = 1; i < sizes.length; i++) expect(sizes[i]).toBeLessThan(sizes[i - 1]);
+	});
+
+	it("floors at minFontSize instead of shrinking indefinitely for very deep nodes", () => {
+		expect(fontSizeForDepth(50, DEFAULT_LAYOUT_CONFIG)).toBe(DEFAULT_LAYOUT_CONFIG.minFontSize);
+	});
+});
+
 describe("estimateNodeWidth", () => {
-	it("clamps to the configured min/max width", () => {
-		expect(estimateNodeWidth("", DEFAULT_LAYOUT_CONFIG)).toBe(DEFAULT_LAYOUT_CONFIG.minNodeWidth);
-		expect(estimateNodeWidth("x".repeat(200), DEFAULT_LAYOUT_CONFIG)).toBe(DEFAULT_LAYOUT_CONFIG.maxNodeWidth);
+	it("clamps to the configured min/max width at a given depth", () => {
+		const scale = scaleForDepth(0, DEFAULT_LAYOUT_CONFIG);
+		expect(estimateNodeWidth("", DEFAULT_LAYOUT_CONFIG, 0)).toBe(DEFAULT_LAYOUT_CONFIG.minNodeWidth * scale);
+		expect(estimateNodeWidth("x".repeat(200), DEFAULT_LAYOUT_CONFIG, 0)).toBe(defaultWrapWidthForDepth(0, DEFAULT_LAYOUT_CONFIG));
 	});
 });
 
 describe("computeNodeBox (long-text wrapping)", () => {
-	it("keeps a short text on one line at the default single-row height", () => {
-		const box = computeNodeBox("short title", DEFAULT_LAYOUT_CONFIG);
+	it("keeps a short text on one line at that depth's single-row height", () => {
+		const box = computeNodeBox("short title", DEFAULT_LAYOUT_CONFIG, 1);
 		expect(box.lines.length).toBe(1);
-		expect(box.h).toBe(DEFAULT_LAYOUT_CONFIG.nodeHeight);
+		expect(box.h).toBeCloseTo(DEFAULT_LAYOUT_CONFIG.nodeHeight * scaleForDepth(1, DEFAULT_LAYOUT_CONFIG));
 	});
 
 	it("wraps text past the default ~60-char width onto additional lines and grows height accordingly", () => {
 		const longText = Array.from({ length: 20 }, (_, i) => `word${i}`).join(" ");
-		const box = computeNodeBox(longText, DEFAULT_LAYOUT_CONFIG);
+		const depth = 1;
+		const box = computeNodeBox(longText, DEFAULT_LAYOUT_CONFIG, depth);
+		const scale = scaleForDepth(depth, DEFAULT_LAYOUT_CONFIG);
 		expect(box.lines.length).toBeGreaterThan(1);
-		expect(box.h).toBe(DEFAULT_LAYOUT_CONFIG.nodeHeight + (box.lines.length - 1) * DEFAULT_LAYOUT_CONFIG.lineHeight);
-		expect(box.w).toBeLessThanOrEqual(DEFAULT_LAYOUT_CONFIG.maxNodeWidth);
+		expect(box.h).toBeCloseTo(DEFAULT_LAYOUT_CONFIG.nodeHeight * scale + (box.lines.length - 1) * DEFAULT_LAYOUT_CONFIG.lineHeight * scale);
+		expect(box.w).toBeLessThanOrEqual(defaultWrapWidthForDepth(depth, DEFAULT_LAYOUT_CONFIG));
 	});
 
-	it("uses manualWidth as the wrap ceiling instead of the config default when set", () => {
+	it("uses manualWidth as the wrap ceiling instead of the depth-scaled default when set", () => {
 		const longText = Array.from({ length: 20 }, (_, i) => `word${i}`).join(" ");
-		const narrow = computeNodeBox(longText, DEFAULT_LAYOUT_CONFIG, 120);
-		const wide = computeNodeBox(longText, DEFAULT_LAYOUT_CONFIG, 800);
+		const narrow = computeNodeBox(longText, DEFAULT_LAYOUT_CONFIG, 1, 120);
+		const wide = computeNodeBox(longText, DEFAULT_LAYOUT_CONFIG, 1, 800);
 		expect(narrow.w).toBeLessThanOrEqual(120);
 		expect(narrow.lines.length).toBeGreaterThan(wide.lines.length);
+	});
+
+	it("gives identical text a strictly smaller box the deeper it is (R15)", () => {
+		const text = "same text everywhere";
+		const shallow = computeNodeBox(text, DEFAULT_LAYOUT_CONFIG, 0);
+		const mid = computeNodeBox(text, DEFAULT_LAYOUT_CONFIG, 2);
+		const deep = computeNodeBox(text, DEFAULT_LAYOUT_CONFIG, 4);
+		expect(shallow.h).toBeGreaterThan(mid.h);
+		expect(mid.h).toBeGreaterThan(deep.h);
+		expect(shallow.w).toBeGreaterThan(mid.w);
+		expect(mid.w).toBeGreaterThan(deep.w);
 	});
 });
 
@@ -40,24 +66,41 @@ describe("computeLayout with wrapped nodes", () => {
 		const md = ["# Root", `## ${longText}`, "## short"].join("\n");
 		const model = parseMindMap(md, "fallback");
 		computeLayout(model.root, { ...DEFAULT_LAYOUT_CONFIG, mode: "right-only" });
-		const [wrapped, short] = model.root.children;
+		const [wrapped, short] = model.root.children; // both depth 1
 		expect(wrapped.layout!.h).toBeGreaterThan(short.layout!.h);
-		expect(short.layout!.h).toBe(DEFAULT_LAYOUT_CONFIG.nodeHeight);
+		expect(short.layout!.h).toBeCloseTo(DEFAULT_LAYOUT_CONFIG.nodeHeight * scaleForDepth(1, DEFAULT_LAYOUT_CONFIG));
 	});
 
-	it("respects a node's manualWidth as its wrap ceiling instead of the config default", () => {
-		// Fits on one line at the default ~60-char width, but a much
+	it("respects a node's manualWidth as its wrap ceiling instead of the depth-scaled default", () => {
+		// Fits on one line at the depth-scaled default width, but a much
 		// narrower manual width should force it to wrap.
 		const text = "one two three four five six";
 		const md = ["# Root", `## ${text}`].join("\n");
 		const model = parseMindMap(md, "fallback");
 		computeLayout(model.root, { ...DEFAULT_LAYOUT_CONFIG, mode: "right-only" });
-		expect(model.root.children[0].layout!.h).toBe(DEFAULT_LAYOUT_CONFIG.nodeHeight); // single line by default
+		const baselineHeight = DEFAULT_LAYOUT_CONFIG.nodeHeight * scaleForDepth(1, DEFAULT_LAYOUT_CONFIG);
+		expect(model.root.children[0].layout!.h).toBeCloseTo(baselineHeight); // single line by default
 
 		model.root.children[0].manualWidth = 100;
 		computeLayout(model.root, { ...DEFAULT_LAYOUT_CONFIG, mode: "right-only" });
 		expect(model.root.children[0].layout!.w).toBeLessThanOrEqual(100);
-		expect(model.root.children[0].layout!.h).toBeGreaterThan(DEFAULT_LAYOUT_CONFIG.nodeHeight); // now wraps
+		expect(model.root.children[0].layout!.h).toBeGreaterThan(baselineHeight); // now wraps
+	});
+
+	it("gives the root the largest box and each deeper level a strictly smaller one, same text everywhere (R15)", () => {
+		const text = "same text everywhere";
+		const md = ["# " + text, "## " + text, "- " + text, "  - " + text].join("\n");
+		const model = parseMindMap(md, "fallback");
+		computeLayout(model.root, { ...DEFAULT_LAYOUT_CONFIG, mode: "right-only" });
+
+		let node = model.root;
+		const heights: number[] = [];
+		while (node) {
+			heights.push(node.layout!.h);
+			node = node.children[0];
+		}
+		expect(heights.length).toBe(4); // root, branch, list item, nested list item
+		for (let i = 1; i < heights.length; i++) expect(heights[i]).toBeLessThan(heights[i - 1]);
 	});
 });
 

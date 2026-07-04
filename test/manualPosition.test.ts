@@ -1,17 +1,22 @@
 import { describe, expect, it } from "vitest";
 import { parseMindMap } from "../src/sync/parser";
-import { computeLayout } from "../src/layout/layoutEngine";
+import { computeLayout, DEFAULT_LAYOUT_CONFIG, scaleForDepth } from "../src/layout/layoutEngine";
 import { assignMissingSides } from "../src/layout/sides";
+
+/** Single-line box height at a given depth (R15: depth-scaled visual hierarchy) — mirrors what `computeNodeBox` derives internally. */
+function heightAtDepth(depth: number): number {
+	return DEFAULT_LAYOUT_CONFIG.nodeHeight * scaleForDepth(depth, DEFAULT_LAYOUT_CONFIG);
+}
 
 describe("computeLayout with manualPos (R12)", () => {
 	it("places a manually-positioned node exactly at its pin, ignoring auto-balance", () => {
 		const model = parseMindMap(["# Root", "## A", "## B", "## C"].join("\n"), "fallback");
 		assignMissingSides(model.root);
-		const pinned = model.root.children[1];
+		const pinned = model.root.children[1]; // depth 1
 		pinned.manualPos = { x: 500, y: -300 };
 
 		computeLayout(model.root);
-		expect(pinned.layout).toEqual({ x: 500, y: -300, w: pinned.layout!.w, h: 28, side: "R" });
+		expect(pinned.layout).toEqual({ x: 500, y: -300, w: pinned.layout!.w, h: heightAtDepth(1), side: "R" });
 	});
 
 	it("infers side from the pin's position relative to its parent", () => {
@@ -57,7 +62,7 @@ describe("computeLayout with manualPos (R12)", () => {
 		a1.manualPos = { x: 700, y: -50 };
 
 		computeLayout(model.root);
-		expect(a1.layout).toEqual({ x: 700, y: -50, w: a1.layout!.w, h: 28, side: a1.layout!.side });
+		expect(a1.layout).toEqual({ x: 700, y: -50, w: a1.layout!.w, h: heightAtDepth(2), side: a1.layout!.side });
 		// its auto sibling a2 is unaffected and still gets a normal position.
 		expect(branch.children[1].layout).toBeDefined();
 	});
@@ -70,7 +75,7 @@ describe("computeLayout with manualPos (R12)", () => {
 		a1.manualPos = { x: 900, y: 200 };
 
 		computeLayout(model.root);
-		expect(branch.layout).toEqual({ x: 300, y: 0, w: branch.layout!.w, h: 28, side: "R" });
-		expect(a1.layout).toEqual({ x: 900, y: 200, w: a1.layout!.w, h: 28, side: "R" });
+		expect(branch.layout).toEqual({ x: 300, y: 0, w: branch.layout!.w, h: heightAtDepth(1), side: "R" });
+		expect(a1.layout).toEqual({ x: 900, y: 200, w: a1.layout!.w, h: heightAtDepth(2), side: "R" });
 	});
 });

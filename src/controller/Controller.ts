@@ -57,6 +57,33 @@ export class Controller {
 		this.emitChange();
 	}
 
+	/**
+	 * Search-jump support: unfolds every folded ancestor of a node (if any)
+	 * — as a single undo step, same as any other structural mutation — then
+	 * selects it. Used when a search result might be hidden behind a
+	 * folded branch and needs to become visible before it can be selected
+	 * and focused in the view. Selection itself isn't part of undo/redo,
+	 * matching `select`.
+	 */
+	revealAndSelect(nodeId: string): void {
+		const node = this.model.byId.get(nodeId);
+		if (!node) return;
+		const foldedAncestors: MindNode[] = [];
+		let cur = node.parent;
+		while (cur) {
+			if (cur.folded) foldedAncestors.push(cur);
+			cur = cur.parent;
+		}
+		if (foldedAncestors.length > 0) {
+			this.stack.execute({
+				do: () => foldedAncestors.forEach((a) => setFolded(this.model, a.id, false)),
+				undo: () => foldedAncestors.forEach((a) => setFolded(this.model, a.id, true)),
+			});
+		}
+		this.selectedId = nodeId;
+		this.emitChange();
+	}
+
 	/** Tab (R2): new child of the selected node (or root if nothing selected), immediately editable. */
 	addChildToSelected(): void {
 		const parentId = this.selectedId ?? this.model.root.id;

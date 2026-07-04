@@ -1,12 +1,15 @@
-import { MindMapModel, MindNode } from "../model/types";
+import { MindMapModel, MindNode, NodeLayout } from "../model/types";
 import { collectVisibleNodes } from "../model/visibility";
 import { resolveNodeColorKey, strokeWidthForDepth } from "./colors";
 import { LinkKind, parseTextSegments } from "../model/links";
 import { wrapText, WordToken } from "../model/textWrap";
-import { DEFAULT_LAYOUT_CONFIG, LayoutConfig } from "../layout/layoutEngine";
+import { DEFAULT_LAYOUT_CONFIG, LayoutConfig, defaultWrapWidthForDepth, fontSizeForDepth, scaleForDepth } from "../layout/layoutEngine";
 
-/** Only the text-metric fields the renderer needs to reproduce layoutEngine's exact wrap points — kept narrow so the renderer doesn't depend on layout-mode fields it has no use for. */
-export type TextMetricsConfig = Pick<LayoutConfig, "charWidth" | "paddingX" | "maxNodeWidth" | "lineHeight" | "nodeHeight" | "minNodeWidth">;
+/** Only the text-metric fields the renderer needs to reproduce layoutEngine's exact wrap points and depth-based font sizing — kept narrow so the renderer doesn't depend on layout-mode fields it has no use for. */
+export type TextMetricsConfig = Pick<
+	LayoutConfig,
+	"charWidth" | "paddingX" | "maxCharsPerLine" | "lineHeight" | "nodeHeight" | "minNodeWidth" | "rootFontSize" | "fontSizeStep" | "minFontSize" | "baselineFontSize"
+>;
 
 const SVG_NS = "http://www.w3.org/2000/svg";
 
@@ -109,8 +112,15 @@ function cubicTangent(p0: Point, p1: Point, p2: Point, p3: Point, t: number): Po
  * variable-width-stroke-as-polygon technique — true varying stroke width
  * isn't expressible as a single SVG `<path>` stroke). Anchors are
  * side-aware (R11): a right-side branch runs from the parent's right edge
- * to the child's left edge; a left-side (mirrored) branch runs the other
- * way round.
+ * to the child's *near* edge (the side facing the parent) — deliberately
+ * short, not stretched across the child's own (possibly wide, wrapped)
+ * box: an earlier attempt anchored this at the child's *far* edge instead
+ * so the branch would visually run under the child's text, but for a wide
+ * box that turned a short hop into a long diagonal sweep that crossed
+ * straight through *other* nodes' text nearby (see DECISIONS.md). Text
+ * sits next to this short tip instead (see `upsertNode`'s side-aware text
+ * anchor), not on top of a long line. A left-side (mirrored) branch runs
+ * the other way round.
  */
 function edgePath(parentLayout: LayoutSnapshot, childLayout: LayoutSnapshot, side: "L" | "R", parentDepth: number, childDepth: number): string {
 	const x1 = side === "R" ? parentLayout.x + parentLayout.w : parentLayout.x;
@@ -165,6 +175,7 @@ export class SvgRenderer {
 	private readonly nodeEls = new Map<string, NodeDom>();
 	private readonly edgeEls = new Map<string, SVGPathElement>(); // keyed by child node id
 	private readonly lastLayout = new Map<string, LayoutSnapshot>();
+	private readonly lastSide = new Map<string, "L" | "R">();
 	private readonly lastText = new Map<string, string>();
 	private readonly lastEdgeD = new Map<string, string>(); // keyed by child node id
 
@@ -266,6 +277,7 @@ export class SvgRenderer {
 		this.nodeEls.clear();
 		this.edgeEls.clear();
 		this.lastLayout.clear();
+		this.lastSide.clear();
 		this.lastText.clear();
 		this.lastEdgeD.clear();
 		this.update(model);
@@ -300,6 +312,7 @@ export class SvgRenderer {
 				dom.g.remove();
 				this.nodeEls.delete(id);
 				this.lastLayout.delete(id);
+				this.lastSide.delete(id);
 				this.lastText.delete(id);
 				const edge = this.edgeEls.get(id);
 				if (edge) {
@@ -359,14 +372,10 @@ export class SvgRenderer {
 			g.appendChild(rect);
 
 			const text = el("text");
+			// Overwritten below (`textAnchorFor`/font-size block) on the very
+			// first layout pass — this is just a harmless initial value.
 			text.setAttribute("text-anchor", "middle");
 			text.setAttribute("dominant-baseline", "central");
-			// Constant regardless of wrapped line count: see the height-formula
-			// note on `computeNodeBox` — box height grows symmetrically by
-			// `lineHeight` per extra line, so the first line's centered
-			// baseline always sits at half the *single-line* height, and
-			// later lines cascade from there via each tspan's own `dy`.
-			text.setAttribute("y", String(this.textCfg.nodeHeight / 2));
 			text.classList.add("mm-node-text");
 			g.appendChild(text);
 
@@ -383,20 +392,33 @@ export class SvgRenderer {
 
 		const prevLayout = this.lastLayout.get(node.id);
 		const sizeChanged = !prevLayout || prevLayout.w !== layout.w || prevLayout.h !== layout.h;
+		const sideChanged = this.lastSide.get(node.id) !== layout.side;
 		if (!prevLayout || prevLayout.x !== layout.x || prevLayout.y !== layout.y) {
 			dom.g.setAttribute("transform", `translate(${layout.x}, ${layout.y})`);
 		}
-		if (sizeChanged) {
+		if (sizeChanged || sideChanged) {
 			dom.rect.setAttribute("width", String(layout.w));
 			dom.rect.setAttribute("height", String(layout.h));
-			dom.text.setAttribute("x", String(layout.w / 2));
+			const [anchor, textX] = this.textAnchorFor(node, layout);
+			dom.text.setAttribute("text-anchor", anchor);
+			dom.text.setAttribute("x", String(textX));
+			// R15 visual hierarchy: font size (and everything derived from it)
+			// scales down with depth, root reading largest. `y` looks like a
+			// constant per node but isn't a global one — see the height-formula
+			// note on `computeNodeBox`: box height grows symmetrically by this
+			// same depth's `lineHeight` per extra line, so the first line's
+			// centered baseline always sits at half *this depth's* single-line
+			// height, with later lines cascading from there via `dy`.
+			dom.text.setAttribute("font-size", String(fontSizeForDepth(node.depth, this.textCfg)));
+			dom.text.setAttribute("y", String((this.textCfg.nodeHeight * scaleForDepth(node.depth, this.textCfg)) / 2));
 			const handleX = layout.side === "L" ? -3 : layout.w - 3;
 			dom.resizeHandle.setAttribute("x", String(handleX));
 			dom.resizeHandle.setAttribute("height", String(layout.h));
 		}
 		this.lastLayout.set(node.id, { x: layout.x, y: layout.y, w: layout.w, h: layout.h });
+		this.lastSide.set(node.id, layout.side);
 
-		if (this.lastText.get(node.id) !== node.text || sizeChanged) {
+		if (this.lastText.get(node.id) !== node.text || sizeChanged || sideChanged) {
 			this.renderNodeText(dom.text, node);
 			this.lastText.set(node.id, node.text);
 		}
@@ -412,9 +434,23 @@ export class SvgRenderer {
 		this.upsertBadge(node, dom, layout);
 	}
 
-	/** The wrap ceiling in px for a node — a manually drag-resized width overrides the config default; must match `computeNodeBox`'s exactly, or wrapped line count here could disagree with the box height layoutEngine already committed to. */
+	/** The wrap ceiling in px for a node — a manually drag-resized width overrides the depth-scaled default; must match `computeNodeBox`'s exactly, or wrapped line count here could disagree with the box height layoutEngine already committed to. */
 	private wrapCeilingFor(node: MindNode): number {
-		return node.manualWidth ?? this.textCfg.maxNodeWidth;
+		return node.manualWidth ?? defaultWrapWidthForDepth(node.depth, this.textCfg);
+	}
+
+	/**
+	 * Text sits right next to the branch's (deliberately short, see
+	 * `edgePath`) tip instead of centered in the middle of the node's own
+	 * box: for a right-side node that's its *near* (left) edge, growing
+	 * rightward away from the parent; for a left-side node, its near
+	 * (right) edge, growing leftward. The root has no incoming branch at
+	 * all and keeps its own visible box, so it stays centered as before.
+	 */
+	private textAnchorFor(node: MindNode, layout: NodeLayout): ["start" | "middle" | "end", number] {
+		if (node.parent === null) return ["middle", layout.w / 2];
+		const edgePadding = this.textCfg.paddingX / 2;
+		return layout.side === "R" ? ["start", edgePadding] : ["end", layout.w - edgePadding];
 	}
 
 	/**
@@ -423,12 +459,13 @@ export class SvgRenderer {
 	 * made clickable independently of the surrounding plain text, or — once
 	 * the text is long enough to actually wrap — as one tspan per wrapped
 	 * line (each further split into per-word tspans so link click targets
-	 * survive a line break). Only runs on a text or size change (rename
-	 * commit / resize), never per keystroke.
+	 * survive a line break). Only runs on a text, size, or side change
+	 * (rename commit / resize / rebalance), never per keystroke.
 	 */
 	private renderNodeText(textEl: SVGTextElement, node: MindNode): void {
+		const scale = scaleForDepth(node.depth, this.textCfg);
 		const maxWidthPx = this.wrapCeilingFor(node);
-		const maxCharsPerLine = Math.max(1, Math.floor((maxWidthPx - this.textCfg.paddingX) / this.textCfg.charWidth));
+		const maxCharsPerLine = Math.max(1, Math.floor((maxWidthPx - this.textCfg.paddingX * scale) / (this.textCfg.charWidth * scale)));
 		const lines = wrapText(node.text, maxCharsPerLine);
 
 		while (textEl.firstChild) textEl.removeChild(textEl.firstChild);
@@ -438,11 +475,11 @@ export class SvgRenderer {
 			return;
 		}
 
-		const w = node.layout!.w;
+		const [, lineX] = this.textAnchorFor(node, node.layout!);
 		lines.forEach((line, i) => {
 			const lineTspan = el("tspan");
-			lineTspan.setAttribute("x", String(w / 2));
-			if (i > 0) lineTspan.setAttribute("dy", String(this.textCfg.lineHeight));
+			lineTspan.setAttribute("x", String(lineX));
+			if (i > 0) lineTspan.setAttribute("dy", String(this.textCfg.lineHeight * scale));
 			this.appendWordTspans(lineTspan, line);
 			textEl.appendChild(lineTspan);
 		});
@@ -592,6 +629,24 @@ export class SvgRenderer {
 		this.view.tx = this.container.clientWidth / 2;
 		this.view.ty = this.container.clientHeight / 2;
 		this.view.scale = 1;
+		this.scheduleApplyViewport();
+	}
+
+	/**
+	 * Pans (keeping the current zoom level) so the given *world-space*
+	 * point lands at the container's center — used for jumping to a search
+	 * result or any other node that might currently be off-screen or
+	 * culled out of the DOM entirely. Deliberately takes raw coordinates
+	 * rather than a node id: the renderer's own layout cache (`lastLayout`)
+	 * is pruned for culled/folded-out nodes (see `applyVisibleSet`), but
+	 * the model's `node.layout` is always current regardless of culling,
+	 * so callers should read the world position from there. `recull()`
+	 * (already wired into `scheduleApplyViewport`) brings the target node
+	 * back into the DOM once the pan lands it inside the viewport again.
+	 */
+	centerOnWorldPoint(x: number, y: number): void {
+		this.view.tx = this.container.clientWidth / 2 - x * this.view.scale;
+		this.view.ty = this.container.clientHeight / 2 - y * this.view.scale;
 		this.scheduleApplyViewport();
 	}
 

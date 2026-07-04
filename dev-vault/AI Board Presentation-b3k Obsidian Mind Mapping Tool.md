@@ -1,0 +1,147 @@
+---
+mindmap:
+  nodes:
+    ^glwety: { width: 131.12890625 }
+---
+# AI Board Presentation
+b3k Obsidian Mind Mapping Tool
+
+## mind mapping intro ^glwety
+- who
+  - Tony Buzan
+    - his well known video on this topic in youtube
+      - https://www.youtube.com/watch?v=u5Y4pIsXTV0
+- what
+  - mind mapping
+- where
+  - University of British Columbia
+- when
+  - 1960
+    - was a student
+  - 1974
+    - use your head
+      - first book
+  - 1993
+    - the mind map book
+- why
+  - our brains
+    - works
+      - with
+        - complex web of accociations
+      - not in one direction
+        - all directions
+  - important for our job
+    - easy note taking
+    - hierachical
+      - related topics can be shown easily
+    - eases analysis process
+- how
+  - to create?
+    - using
+      - pen and paper
+        - advantages
+          - fun to create
+            - with additional images or anything else to be pasted into a paper
+            - our own drawings
+          - retain more in memory
+        - disadvantages
+          - time consuming
+      - softwares
+        - advantages
+          - much more faster
+            - editing capabilities
+          - can support digital materials
+            - e.g.
+              - links to videos
+              - links to other documents
+                - One Drive
+                - ...
+        - some alternatives I know
+          - ayoa
+            - Tony Buzan's original work
+              - advantages
+                - very compelling UI
+                - directly from the creator
+                  - good features
+          - Xmind
+            - advantages
+              - base product is free
+            - disadvantages
+              - most of the features need paid subs
+                - but normally we do not need them
+              - slows down after too much nodes
+          - available obsidian extensions
+            - advantages
+              - they are free
+            - disadvantages
+              - most of them are closed source
+                - we cannot rely on them
+                  - until some recommendations from CYS
+              - slows down after a while
+              - does not work consistently
+        - disadvantages
+          - since we type and paste texts does not retain as much as physical ones
+## b3k-obsidian plugin  intro
+- source is available at [code siemens](https://example.com/3272)
+- obsidian
+  - dependency
+    - useful obsidian links
+      - [obsidian web page](https://obsidian.md)
+      - [youtube video](https://www.youtube.com/watch?v=z4AbijUCoKU)
+        - [same guy with claude usage](https://www.youtube.com/watch?v=rRa9td4oe7k)
+  - good for searches and related information
+- why this stack?
+  - love of .md files
+  - Obsidian is very good at creating graph views to relate information
+  - again on .md files
+    - nearly a standard in AI
+      - to create
+        - skills
+        - documentation
+  - js stack, easy to implement new features with AI
+- my custom implementation
+  - implementation plan
+    - identified the best usecases of my favorite mind mapping software
+      - its shortcuts
+        - tab
+        - enter
+    - research and planning
+      - in research mode
+        - with Fable
+        - to create comprehensive plan
+          - to handover to Sonnet 5 for impl
+    - sonnet 5 iplements the plan
+    - testing, feedback and fixes loop
+## why this specific plugin matters
+- uses .md
+  - .md format advantages
+    - info is stored in a .md file
+      - supplied to an AI system later
+    - enables easy documentation
+      - near code documentation
+        - we can create mermaid diagrams or any other doc out of them
+      - presentations out of them
+- enforced performance in implementation phase
+  - in created plan and CLAUDE.md
+  - all the features performance tested
+  - I was asked to decide if a trade off between performance and some feature occurred and do my best
+- resides in my repo in code siemens
+  - can be checked later by other people
+  - we can asses it against anything required
+## how to properly use it 
+- one time action
+  - setup obsidian
+    - install this plugin
+- my usage
+  - start to write what's in your mind
+    - enter the main topic first
+      - this will be on top of hierarchy
+        - think it like # header
+    - create a ''Goal'' node
+      - one sentence summary of how to find the end resultl
+    - create a high level process steps
+      - like goals but high level steps to achieve the goal
+    - create steps
+      - break down high level steps into further sub-steps
+    - go until your analysis is finished
+## example usage

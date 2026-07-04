@@ -128,4 +128,48 @@ describe("Controller", () => {
 		controller.toggleFold(leaf.id);
 		expect(leaf.folded).toBe(false);
 	});
+
+	it("revealAndSelect unfolds every folded ancestor of a hidden node and selects it", () => {
+		const controller = makeController(["# Root", "## Branch A", "- a1", "  - a2"].join("\n"));
+		const branchA = controller.model.root.children[0];
+		const a1 = branchA.children[0];
+		const a2 = a1.children[0];
+		branchA.folded = true;
+		a1.folded = true;
+
+		controller.revealAndSelect(a2.id);
+
+		expect(branchA.folded).toBe(false);
+		expect(a1.folded).toBe(false);
+		expect(controller.selectedId).toBe(a2.id);
+	});
+
+	it("revealAndSelect is a no-op unfold (just selects) when the node is already visible", () => {
+		const controller = makeController();
+		const leaf = controller.model.root.children[0].children[0];
+		controller.revealAndSelect(leaf.id);
+		expect(controller.selectedId).toBe(leaf.id);
+	});
+
+	it("revealAndSelect's unfold is a single undo step that restores every unfolded ancestor together", () => {
+		const controller = makeController(["# Root", "## Branch A", "- a1", "  - a2"].join("\n"));
+		const branchA = controller.model.root.children[0];
+		const a1 = branchA.children[0];
+		const a2 = a1.children[0];
+		branchA.folded = true;
+		a1.folded = true;
+
+		controller.revealAndSelect(a2.id);
+		controller.undo();
+
+		expect(branchA.folded).toBe(true);
+		expect(a1.folded).toBe(true);
+	});
+
+	it("revealAndSelect does nothing for an unknown node id", () => {
+		const controller = makeController();
+		controller.select(controller.model.root.id);
+		controller.revealAndSelect("does-not-exist");
+		expect(controller.selectedId).toBe(controller.model.root.id);
+	});
 });

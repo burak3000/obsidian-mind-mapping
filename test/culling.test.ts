@@ -78,6 +78,34 @@ describe("viewport culling", () => {
 		expect(container.querySelector(`[data-node-id="${deepest.id}"]`)).not.toBeNull();
 		renderer.destroy();
 	});
+
+	it("centerOnWorldPoint brings a culled-out node back into the DOM (search-jump support)", async () => {
+		const model = parseMindMap(makeChain(400), "fallback");
+		computeLayout(model.root, WIDE_CFG);
+
+		const container = document.createElement("div");
+		Object.defineProperty(container, "clientWidth", { value: 800, configurable: true });
+		Object.defineProperty(container, "clientHeight", { value: 600, configurable: true });
+		const renderer = new SvgRenderer(container);
+		renderer.mount(model);
+		await nextFrame();
+
+		const deepest = (() => {
+			let n = model.root;
+			while (n.children.length) n = n.children[0];
+			return n;
+		})();
+		expect(container.querySelector(`[data-node-id="${deepest.id}"]`)).toBeNull();
+
+		// Read straight from the model's layout (as MindMapView's search-jump
+		// does), not the renderer's own DOM cache — that's the whole point:
+		// a culled node's entry there was already pruned by applyVisibleSet.
+		renderer.centerOnWorldPoint(deepest.layout!.x + deepest.layout!.w / 2, deepest.layout!.y + deepest.layout!.h / 2);
+		await nextFrame();
+
+		expect(container.querySelector(`[data-node-id="${deepest.id}"]`)).not.toBeNull();
+		renderer.destroy();
+	});
 });
 
 function nextFrame(): Promise<void> {

@@ -45,6 +45,17 @@ export default class MindMapPlugin extends Plugin {
 				return true;
 			},
 		});
+
+		this.addCommand({
+			id: "search-mindmap",
+			name: "Search mind map",
+			checkCallback: (checking) => {
+				const view = this.app.workspace.getActiveViewOfType(MindMapView);
+				if (!view) return false;
+				if (!checking) view.toggleSearch();
+				return true;
+			},
+		});
 	}
 
 	onunload(): void {

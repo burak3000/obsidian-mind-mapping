@@ -6,7 +6,7 @@
 // the dev vault (see CLAUDE.md).
 import { describe, expect, it } from "vitest";
 import { parseMindMap } from "../src/sync/parser";
-import { computeLayout, DEFAULT_LAYOUT_CONFIG } from "../src/layout/layoutEngine";
+import { computeLayout, DEFAULT_LAYOUT_CONFIG, fontSizeForDepth, scaleForDepth } from "../src/layout/layoutEngine";
 import { SvgRenderer } from "../src/render/SvgRenderer";
 
 describe("SvgRenderer", () => {
@@ -45,6 +45,30 @@ describe("SvgRenderer", () => {
 		renderer.destroy();
 	});
 
+	it("renders each node's font-size strictly decreasing with depth, root largest (R15: visual hierarchy by size)", () => {
+		const md = ["# Root", "## Branch A", "- a", "  - a1"].join("\n");
+		const model = parseMindMap(md, "fallback");
+		computeLayout(model.root, { ...DEFAULT_LAYOUT_CONFIG, mode: "right-only" });
+
+		const container = document.createElement("div");
+		const renderer = new SvgRenderer(container);
+		renderer.mount(model);
+
+		const fontSizeOf = (id: string) => Number(container.querySelector(`[data-node-id="${id}"] .mm-node-text`)!.getAttribute("font-size"));
+
+		const branch = model.root.children[0];
+		const a = branch.children[0];
+		const a1 = a.children[0];
+		const sizes = [model.root, branch, a, a1].map((n) => fontSizeOf(n.id));
+
+		expect(sizes[0]).toBe(DEFAULT_LAYOUT_CONFIG.rootFontSize);
+		for (let i = 1; i < sizes.length; i++) expect(sizes[i]).toBeLessThan(sizes[i - 1]);
+		// And matches the exact depth-based formula, not just "smaller".
+		[model.root, branch, a, a1].forEach((n, i) => expect(sizes[i]).toBe(fontSizeForDepth(n.depth, DEFAULT_LAYOUT_CONFIG)));
+
+		renderer.destroy();
+	});
+
 	it("wraps long text into multiple tspan lines and grows the rect height to match the layout box", () => {
 		const longText = Array.from({ length: 20 }, (_, i) => `word${i}`).join(" ");
 		const md = ["# Root", `## ${longText}`].join("\n");
@@ -61,7 +85,8 @@ describe("SvgRenderer", () => {
 		const lineTspans = textEl.querySelectorAll(":scope > tspan");
 		expect(lineTspans.length).toBeGreaterThan(1);
 		expect(lineTspans[0].getAttribute("dy")).toBeNull(); // first line has no offset
-		expect(lineTspans[1].getAttribute("dy")).toBe(String(DEFAULT_LAYOUT_CONFIG.lineHeight));
+		// depth 1, so scaled by that depth's font size (R15), not the raw baseline lineHeight.
+		expect(lineTspans[1].getAttribute("dy")).toBe(String(DEFAULT_LAYOUT_CONFIG.lineHeight * scaleForDepth(1, DEFAULT_LAYOUT_CONFIG)));
 
 		const rect = container.querySelector(`[data-node-id="${branch.id}"] .mm-node-rect`)!;
 		expect(rect.getAttribute("height")).toBe(String(branch.layout!.h));
@@ -128,6 +153,76 @@ describe("SvgRenderer", () => {
 		// Branch A -> a: continues narrowing, starting where the previous edge left off.
 		expect(aWidths.start).toBeCloseTo(branchWidths.end, 1);
 		expect(aWidths.end).toBeLessThan(aWidths.start);
+
+		renderer.destroy();
+	});
+
+	it("ends an edge at the child's near edge (short hop, not stretched across its whole box) and anchors the child's text right next to that tip", () => {
+		// Regression: an earlier attempt stretched the edge across the
+		// child's *entire* box (far edge) so text would visually sit "on"
+		// the branch — but for a wide (long/wrapped-text) box that turned a
+		// short hop into a long diagonal sweep that crossed straight
+		// through *other* nodes' text nearby. The fix keeps the edge short
+		// (near edge, as always) and instead aligns the text itself flush
+		// against that tip, growing away from it — see DECISIONS.md.
+		const md = ["# Root", "## Branch A"].join("\n");
+		const model = parseMindMap(md, "fallback");
+		computeLayout(model.root, { ...DEFAULT_LAYOUT_CONFIG, mode: "right-only" });
+		const branch = model.root.children[0];
+
+		const container = document.createElement("div");
+		const renderer = new SvgRenderer(container);
+		renderer.mount(model);
+
+		const midpointX = (d: string): number => {
+			const nums = d.match(/-?\d+(\.\d+)?/g)!.map(Number);
+			const points: [number, number][] = [];
+			for (let i = 0; i < nums.length; i += 2) points.push([nums[i], nums[i + 1]]);
+			const n = (points.length - 2) / 2; // index of the last centerline sample (top row)
+			return (points[n][0] + points[n + 1][0]) / 2; // average of the two far-end offset points = the centerline's endpoint x
+		};
+
+		const branchEdgeD = container.querySelector(`[data-child-id="${branch.id}"]`)!.getAttribute("d")!;
+		// Edge ends at Branch A's *near* edge (x), not its far edge (x + w).
+		expect(midpointX(branchEdgeD)).toBeCloseTo(branch.layout!.x, 1);
+
+		const textEl = container.querySelector(`[data-node-id="${branch.id}"] .mm-node-text`)!;
+		// Right-side node: text starts (text-anchor: start) right next to
+		// that same near-edge tip, not centered in the middle of the box.
+		expect(textEl.getAttribute("text-anchor")).toBe("start");
+		expect(Number(textEl.getAttribute("x"))).toBeLessThan(branch.layout!.w / 2);
+
+		renderer.destroy();
+	});
+
+	it("anchors a left-side node's text at its near (right) edge, growing leftward away from it", () => {
+		const md = ["# Root", "## Branch A"].join("\n");
+		const model = parseMindMap(md, "fallback");
+		computeLayout(model.root, { ...DEFAULT_LAYOUT_CONFIG, mode: "left-only" });
+		const branch = model.root.children[0];
+
+		const container = document.createElement("div");
+		const renderer = new SvgRenderer(container);
+		renderer.mount(model);
+
+		const textEl = container.querySelector(`[data-node-id="${branch.id}"] .mm-node-text`)!;
+		expect(textEl.getAttribute("text-anchor")).toBe("end");
+		expect(Number(textEl.getAttribute("x"))).toBeGreaterThan(branch.layout!.w / 2);
+
+		renderer.destroy();
+	});
+
+	it("keeps the root's text centered in its own (visible) box, unlike sub-topics", () => {
+		const model = parseMindMap(["# Root", "## Branch A"].join("\n"), "fallback");
+		computeLayout(model.root);
+
+		const container = document.createElement("div");
+		const renderer = new SvgRenderer(container);
+		renderer.mount(model);
+
+		const rootText = container.querySelector(`[data-node-id="${model.root.id}"] .mm-node-text`)!;
+		expect(rootText.getAttribute("text-anchor")).toBe("middle");
+		expect(Number(rootText.getAttribute("x"))).toBeCloseTo(model.root.layout!.w / 2, 1);
 
 		renderer.destroy();
 	});

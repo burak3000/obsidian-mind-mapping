@@ -3,6 +3,9 @@ dist/
 dev-vault/.obsidian/plugins/mindmap-view/main.js
 dev-vault/.obsidian/plugins/mindmap-view/manifest.json
 dev-vault/.obsidian/plugins/mindmap-view/styles.css
+# Third-party plugin installed locally in the dev vault for comparison
+# testing — not part of this project.
+dev-vault/.obsidian/plugins/obsidian-markmind/
 dev-vault/.obsidian/workspace.json
 dev-vault/.obsidian/workspace-mobile.json
 fixtures/*.md

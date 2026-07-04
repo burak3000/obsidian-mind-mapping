@@ -5,15 +5,19 @@ import { wrapText, lineLength } from "../model/textWrap";
 export type LayoutMode = "balanced" | "right-only" | "left-only";
 
 export interface LayoutConfig {
-	nodeHeight: number; // px, single-line row height
+	nodeHeight: number; // px, single-line row height — baseline, tuned for `baselineFontSize`
 	siblingGap: number; // px, vertical gap between sibling rows
 	levelGap: number; // px, horizontal gap between depth levels
-	charWidth: number; // px, approx width per character (layout estimate, not measured text)
-	minNodeWidth: number;
-	maxNodeWidth: number; // default wrap width (~60 chars) before text moves to a new line; a node's own manualWidth overrides this
-	lineHeight: number; // px added per extra wrapped line, on top of nodeHeight
-	paddingX: number;
+	charWidth: number; // px, approx width per character — baseline, tuned for `baselineFontSize`
+	minNodeWidth: number; // baseline
+	maxCharsPerLine: number; // default wrap width in characters (~60) before text moves to a new line — depth-invariant; a node's own manualWidth (already in real px) overrides the *pixel* ceiling this maps to, not this character count
+	lineHeight: number; // px added per extra wrapped line, on top of nodeHeight — baseline
+	paddingX: number; // baseline
 	mode: LayoutMode;
+	rootFontSize: number; // px at depth 0 — visual hierarchy (R15): the main topic reads as the largest
+	fontSizeStep: number; // px subtracted per depth level below root
+	minFontSize: number; // px floor so deep nodes stay legible instead of shrinking to nothing
+	baselineFontSize: number; // the font size nodeHeight/charWidth/lineHeight/paddingX/minNodeWidth above were tuned for — used to derive the scale factor at any given depth
 }
 
 export const DEFAULT_LAYOUT_CONFIG: LayoutConfig = {
@@ -22,11 +26,34 @@ export const DEFAULT_LAYOUT_CONFIG: LayoutConfig = {
 	levelGap: 60,
 	charWidth: 7,
 	minNodeWidth: 40,
-	maxNodeWidth: 436, // ~60 characters/line at the default charWidth
+	maxCharsPerLine: 60,
 	lineHeight: 16,
 	paddingX: 16,
 	mode: "balanced",
+	rootFontSize: 18,
+	fontSizeStep: 2,
+	minFontSize: 10,
+	baselineFontSize: 12,
 };
+
+type FontScaleConfig = Pick<LayoutConfig, "rootFontSize" | "fontSizeStep" | "minFontSize" | "baselineFontSize">;
+type WrapWidthConfig = FontScaleConfig & Pick<LayoutConfig, "charWidth" | "paddingX" | "maxCharsPerLine">;
+
+/** Visual hierarchy by depth (R15): root reads largest, each level down a bit smaller, floored so deep nodes stay legible. */
+export function fontSizeForDepth(depth: number, cfg: FontScaleConfig): number {
+	return Math.max(cfg.minFontSize, cfg.rootFontSize - depth * cfg.fontSizeStep);
+}
+
+/** Ratio against the font size all the baseline px constants (nodeHeight/charWidth/lineHeight/paddingX/minNodeWidth) were tuned for — multiply any of them by this to get the value actually used at a given depth, so box geometry stays proportional to the font size rendered there. */
+export function scaleForDepth(depth: number, cfg: FontScaleConfig): number {
+	return fontSizeForDepth(depth, cfg) / cfg.baselineFontSize;
+}
+
+/** The default (non-manualWidth) wrap ceiling in px at a given depth: `maxCharsPerLine` characters at that depth's scaled char width — the character-count threshold itself doesn't change with depth, only the pixel width it maps to. */
+export function defaultWrapWidthForDepth(depth: number, cfg: WrapWidthConfig): number {
+	const scale = scaleForDepth(depth, cfg);
+	return cfg.maxCharsPerLine * (cfg.charWidth * scale) + cfg.paddingX * scale;
+}
 
 export interface NodeBox {
 	w: number;
@@ -35,23 +62,31 @@ export interface NodeBox {
 }
 
 /**
- * Wraps `text` to fit within `manualWidth` (if the node's been drag-resized)
- * or the config default, and derives the box size from the wrapped lines:
- * width shrinks to the longest actual line (never wider than the wrap
- * ceiling), height grows by `lineHeight` per line beyond the first.
+ * Wraps `text` to fit within `manualWidth` (if the node's been drag-resized
+ * — already a real px value, not scaled further) or the depth-scaled
+ * default ceiling, and derives the box size from the wrapped lines: width
+ * shrinks to the longest actual line (never wider than the wrap ceiling),
+ * height grows by the depth-scaled `lineHeight` per line beyond the first.
  */
-export function computeNodeBox(text: string, cfg: LayoutConfig, manualWidth?: number): NodeBox {
-	const maxWidthPx = manualWidth ?? cfg.maxNodeWidth;
-	const maxCharsPerLine = Math.max(1, Math.floor((maxWidthPx - cfg.paddingX) / cfg.charWidth));
+export function computeNodeBox(text: string, cfg: LayoutConfig, depth: number, manualWidth?: number): NodeBox {
+	const scale = scaleForDepth(depth, cfg);
+	const charWidth = cfg.charWidth * scale;
+	const paddingX = cfg.paddingX * scale;
+	const nodeHeight = cfg.nodeHeight * scale;
+	const lineHeight = cfg.lineHeight * scale;
+	const minNodeWidth = cfg.minNodeWidth * scale;
+
+	const maxWidthPx = manualWidth ?? defaultWrapWidthForDepth(depth, cfg);
+	const maxCharsPerLine = Math.max(1, Math.floor((maxWidthPx - paddingX) / charWidth));
 	const lines = wrapText(text, maxCharsPerLine);
 	const longestChars = Math.max(1, ...lines.map(lineLength));
-	const w = Math.min(maxWidthPx, Math.max(cfg.minNodeWidth, longestChars * cfg.charWidth + cfg.paddingX));
-	const h = lines.length <= 1 ? cfg.nodeHeight : cfg.nodeHeight + (lines.length - 1) * cfg.lineHeight;
+	const w = Math.min(maxWidthPx, Math.max(minNodeWidth, longestChars * charWidth + paddingX));
+	const h = lines.length <= 1 ? nodeHeight : nodeHeight + (lines.length - 1) * lineHeight;
 	return { w, h, lines };
 }
 
-export function estimateNodeWidth(text: string, cfg: LayoutConfig, manualWidth?: number): number {
-	return computeNodeBox(text, cfg, manualWidth).w;
+export function estimateNodeWidth(text: string, cfg: LayoutConfig, depth: number, manualWidth?: number): number {
+	return computeNodeBox(text, cfg, depth, manualWidth).w;
 }
 
 /**
@@ -61,16 +96,17 @@ export function estimateNodeWidth(text: string, cfg: LayoutConfig, manualWidth?:
  * gotcha for width estimation) — wrapping is real per-character work
  * (tokenize + greedy-pack), so recomputing it on every one of those
  * calls would multiply an already-non-trivial cost. Invalidated
- * whenever the node's own text or manualWidth actually changes;
- * otherwise reused across calls within *and* across layout passes.
+ * whenever the node's own text, manualWidth, or depth (drag-reorder can
+ * change depth) actually changes; otherwise reused across calls within
+ * *and* across layout passes.
  */
-const boxCache = new WeakMap<MindNode, { text: string; manualWidth: number | undefined; box: NodeBox }>();
+const boxCache = new WeakMap<MindNode, { text: string; manualWidth: number | undefined; depth: number; box: NodeBox }>();
 
 function nodeBoxFor(node: MindNode, cfg: LayoutConfig): NodeBox {
 	const cached = boxCache.get(node);
-	if (cached && cached.text === node.text && cached.manualWidth === node.manualWidth) return cached.box;
-	const box = computeNodeBox(node.text, cfg, node.manualWidth);
-	boxCache.set(node, { text: node.text, manualWidth: node.manualWidth, box });
+	if (cached && cached.text === node.text && cached.manualWidth === node.manualWidth && cached.depth === node.depth) return cached.box;
+	const box = computeNodeBox(node.text, cfg, node.depth, node.manualWidth);
+	boxCache.set(node, { text: node.text, manualWidth: node.manualWidth, depth: node.depth, box });
 	return box;
 }
 

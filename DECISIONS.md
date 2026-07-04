@@ -1,5 +1,156 @@
 # Architectural Decision Records
 
+## 2026-07-04 — Feature: visual hierarchy by size (R15) — font/box scale by depth
+
+**Choice:** every node's box and font size now scale with depth: root
+reads largest (18px), each level down shrinks by 2px, floored at 10px so
+deep nodes stay legible instead of vanishing. `layoutEngine.ts` adds
+`fontSizeForDepth`/`scaleForDepth`/`defaultWrapWidthForDepth`; box
+geometry (`computeNodeBox`) multiplies every baseline px constant
+(`nodeHeight`, `charWidth`, `lineHeight`, `paddingX`, `minNodeWidth` — all
+tuned for a 12px "baseline" font) by that depth's scale ratio, so text
+never overflows or rattles around inside its own box regardless of depth.
+`SvgRenderer` sets `font-size` as a per-node SVG attribute (not CSS —
+removed the old static `.mm-node-text { font-size: 12px }` rule
+entirely, since a stylesheet rule would otherwise win the cascade over
+the presentation attribute and silently flatten every node back to one
+size) and derives text-y/wrap-width/line-height the same depth-scaled
+way, reusing the exact same formulas layoutEngine used so wrapped line
+counts never disagree between the two.
+**Character-count wrap threshold stays depth-invariant on purpose:**
+`maxCharsPerLine` (~60) doesn't itself change with depth — only the pixel
+width it maps to does (via the scaled `charWidth`). This keeps "how many
+characters before a line wraps" a constant, predictable behavior at every
+depth, while the *box* still ends up proportionally sized.
+**A node's own `manualWidth` (drag-resize) is never scaled** — it's
+already a real px value the user chose by looking at the actual box on
+screen, not a formula input.
+**Cost:** none new — same O(1)-per-node math as before, just parameterized
+by a value (`node.depth`) already on the node. Re-verified the box cache
+(`nodeBoxFor`, added in the text-wrapping feature to survive flextree's
+multiple-calls-per-node gotcha) also invalidates on a depth change, not
+just text/manualWidth — depth *can* change via drag-reorder (`moveNode`),
+which the original cache key predated. `npm run bench:m2` unchanged
+(20–26ms at 5,000 nodes, same as the prior baseline); bundle size 56 KB.
+**Regression tests:** `test/layout.test.ts` (`fontSizeForDepth` monotonic
+decrease + floor, `computeNodeBox`/`computeLayout` giving identical text a
+strictly smaller box the deeper it is), `test/renderer.smoke.test.ts`
+(rendered `font-size` attribute matches the formula exactly at each
+depth, not just "looks smaller"), `test/manualPosition.test.ts` (updated
+hardcoded height expectations to the depth-scaled formula).
+
+## 2026-07-04 — Feature: search with a results list, reveal + focus on click
+
+**Choice:** `src/model/search.ts` (`searchNodes`) does a plain
+case-insensitive substring scan of every node's display text (link syntax
+stripped), including nodes hidden behind folded ancestors — search should
+find anything in the document, not just what's currently visible. Results
+are capped at 50 materialized rows but the true total match count is
+still reported, so a broad query on a large map doesn't force rendering
+thousands of list items. `src/view/SearchPanel.ts` is a small overlay
+(same absolute-positioning pattern as `InlineEditor`) with the query input
+and results list; arrow keys move a highlighted result, Enter selects it.
+Clicking (or Enter-ing) a result calls `Controller.revealAndSelect`  — new
+method that unfolds every folded ancestor of the target node in a single
+undo step (mirroring `toggleFold`'s use of `setFolded`), then selects it —
+followed by `SvgRenderer.centerOnWorldPoint`, a new renderer method that
+pans (keeping current zoom) to a raw world-space coordinate rather than a
+node id.
+**Why raw coordinates, not a node-id-based "center on node":** the
+renderer's own `lastLayout` cache is pruned for culled-out nodes (see
+`applyVisibleSet`, M6) — a search hit on a large map is exactly the case
+most likely to be off-screen/culled. The *model's* `node.layout` has no
+such gap (computeLayout always fills it in for every fold-visible node,
+regardless of viewport), so the caller (`MindMapView.focusNode`) reads
+world position from there and hands the renderer just numbers. Panning
+re-triggers `recull()` (already wired into the existing rAF-scheduled
+transform write), which brings the target node back into the DOM.
+**Cost, measured:** `searchNodes` is a single O(n) string-scan per
+keystroke; timed directly against the 5,000-node stress fixture at
+0.5–0.8ms per call (broad and narrow queries both) — not remotely close
+to any per-keystroke budget, so no debouncing or indexing was added.
+Bundle size: 56 KB (`dist/main.js`, production), still well under the
+500 KB budget.
+**Entry points:** Ctrl/Cmd+F (opens, or refocuses if already open — same
+convention as a browser's find bar), a header search icon
+(`addAction`), and an Obsidian command ("Search mind map"), matching the
+existing "Rebalance mind map" command pattern.
+**Regression tests:** `test/search.test.ts` (case-insensitivity, folded
+subtrees, link-label matching, result cap vs. true count), `test/searchPanel.test.ts`
+(keyboard nav, click-to-select, count display), `test/controller.test.ts`
+(`revealAndSelect` unfolds multiple ancestors as one undo step),
+`test/culling.test.ts` (`centerOnWorldPoint` brings a culled-out node back
+into the DOM using only its model layout, not the renderer's own cache).
+
+## 2026-07-04 — Bug fix: far-edge branch anchor (previous entry) crossed through other nodes' text
+
+**Bug (reported by user with a screenshot):** the very next fix below
+("node text floated in a gap instead of sitting on its branch") stretched
+each edge across the child's entire box so the branch would visually run
+under its text. That worked for short labels, but for a long or wrapped
+(now up to ~60 chars/multi-line, per the wrapping feature added the same
+day) box, stretching a short hop into a span of several hundred pixels
+turned the Bezier into a long diagonal sweep — and at that length, with
+siblings stacked at different row heights nearby, the sweep crossed
+straight through *other* nodes' text instead of just running under its
+own. Net effect: text became harder to read, not easier.
+**Root cause:** conflating two different things under one change — "the
+branch should visually connect to the text" doesn't require the branch
+geometry itself to travel the text's full width; it only requires the
+text to sit *at* the branch's tip.
+**Fix:** reverted `edgePath`'s child anchor back to the near edge (short,
+as it always was pre-taper). Instead, `SvgRenderer.textAnchorFor` aligns
+the text itself flush against that near-edge tip (`text-anchor: start` at
+a small padding past the tip for a right-side node, `text-anchor: end` a
+small padding before it for a left-side node) and lets it grow *away*
+from the branch, not centered in the box. The root keeps its old centered
+alignment (it has no incoming branch and keeps its own visible box).
+**Cost:** none beyond what the wrapping/taper work already cost — this
+only changes which two x-coordinates get written (edge endpoint reverted,
+text x/anchor added), still O(1) per node/edge. Added a `lastSide` cache
+(parallel to `lastLayout`/`lastText`) so the text anchor/x recomputation
+is gated by an actual size-or-side change, not written unconditionally
+on every visible node on every update.
+**Regression tests:** `test/renderer.smoke.test.ts` — edge ends at the
+near edge (not far edge) for a right-side node; the same node's text uses
+`text-anchor: start` positioned left of box-center; a left-side node uses
+`text-anchor: end` positioned right of box-center; the root stays
+centered in its own box.
+
+## 2026-07-04 — Bug fix: node text floated in a gap instead of sitting on its branch
+
+**Bug (reported by user with an annotated screenshot):** a node's text
+appeared in the empty space between where its incoming branch visually
+ended and where its own outgoing branches began, instead of sitting
+directly on the branch — most visible on multi-level chains, where each
+label looked like it was floating in a gap rather than riding on the
+connecting line (XMind's usual "floating topic" look has no such gap).
+**Root cause:** `SvgRenderer.edgePath`'s child-side anchor (`x2`) used
+the child's *near* edge (the side facing the parent) — e.g. for a
+right-side branch, `childLayout.x` (the box's left edge). Since the
+child's text is centered within its own box (at `x + w/2`), the branch
+stopped half the box's width short of the text, leaving it looking
+disconnected. Meanwhile this same node's *own* outgoing edges (to its
+children) already start from its *far* edge (`x1` computed the same way,
+one level down) — so there was a real gap in the middle of every node's
+box that nothing drew into.
+**Fix:** changed `x2` to anchor at the child's *far* edge instead
+(swapped which side of the existing ternary applies to R vs L) — the
+incoming branch now runs across the child's entire box span, passing
+underneath its centered text, and lands exactly on the point this same
+node uses as `x1` for its own outgoing edges. Two consecutive segments
+now connect with zero gap: one visually continuous branch per lineage,
+with each node's label sitting on top of it — matching the screenshot's
+green annotations exactly.
+**Cost:** none — this only changes two constant x-coordinates already
+being computed; same O(1) per edge, no new samples, no algorithm change.
+Confirmed via `npm test` (161 passing) that the taper-width math (based
+on depth, not anchor position) is unaffected.
+**Regression test:** `test/renderer.smoke.test.ts` — asserts a
+root→child edge's far-end centerline x equals the child's far edge
+(`x + w`), and that this exactly matches the next edge's (child→grandchild)
+start x.
+
 ## 2026-07-04 — Second bug-fix pass: text wrapping, drag-resize, unboxed sub-topics, Shift+Enter newline
 
 **Context:** a second round of user-reported UI test results after
