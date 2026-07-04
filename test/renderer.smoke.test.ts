@@ -320,7 +320,7 @@ describe("SvgRenderer", () => {
 		renderer.destroy();
 	});
 
-	it("shows a fold-count badge with the cached subtreeCount when a node is folded, and removes it on unfold", () => {
+	it("shows a fold-count badge with the cached subtreeCount when a node is folded, and switches to a plain collapse dot on unfold", () => {
 		const md = ["# Root", "## Branch A", "- a", "  - a1", "  - a2"].join("\n");
 		const model = parseMindMap(md, "fallback");
 		const branch = model.root.children[0];
@@ -334,17 +334,39 @@ describe("SvgRenderer", () => {
 		const branchG = container.querySelector(`[data-node-id="${branch.id}"]`)!;
 		const badge = branchG.querySelector(".mm-fold-badge");
 		expect(badge).not.toBeNull();
+		expect(badge!.classList.contains("mm-fold-badge-folded")).toBe(true);
 		expect(badge!.querySelector("text")!.textContent).toBe(String(branch.subtreeCount)); // 3: a, a1, a2
 
 		branch.folded = false;
 		computeLayout(model.root);
 		renderer.update(model);
-		expect(branchG.querySelector(".mm-fold-badge")).toBeNull();
+		// Branch still has children, so the collapse affordance stays — just no longer showing a count.
+		const collapseDot = branchG.querySelector(".mm-fold-badge");
+		expect(collapseDot).not.toBeNull();
+		expect(collapseDot!.classList.contains("mm-fold-badge-folded")).toBe(false);
+		expect(collapseDot!.querySelector("text")!.textContent).toBe("–");
 
 		renderer.destroy();
 	});
 
-	it("does not show a badge on a folded node with no children", () => {
+	it("shows a plain collapse dot (no count) on an unfolded node with children", () => {
+		const md = ["# Root", "## Branch A", "- a"].join("\n");
+		const model = parseMindMap(md, "fallback");
+		const branch = model.root.children[0];
+		computeLayout(model.root);
+
+		const container = document.createElement("div");
+		const renderer = new SvgRenderer(container);
+		renderer.mount(model);
+
+		const badge = container.querySelector(`[data-node-id="${branch.id}"] .mm-fold-badge`);
+		expect(badge).not.toBeNull();
+		expect(badge!.classList.contains("mm-fold-badge-folded")).toBe(false);
+		expect(badge!.querySelector("text")!.textContent).toBe("–");
+		renderer.destroy();
+	});
+
+	it("does not show a fold affordance on a childless node, folded or not", () => {
 		const md = ["# Root", "## Branch A"].join("\n");
 		const model = parseMindMap(md, "fallback");
 		const branch = model.root.children[0];
@@ -642,6 +664,48 @@ describe("SvgRenderer", () => {
 		// container, not `position: fixed` against the viewport.
 		expect(rect.left).toBeLessThan(300);
 		expect(rect.top).toBeLessThan(500);
+
+		renderer.destroy();
+	});
+
+	it("wheel with ctrlKey (trackpad pinch) zooms around the cursor instead of panning", async () => {
+		const model = parseMindMap(["# Root", "## Branch A"].join("\n"), "fallback");
+		computeLayout(model.root);
+
+		const container = document.createElement("div");
+		const renderer = new SvgRenderer(container);
+		renderer.mount(model);
+		const svg = container.querySelector(".mm-svg")!;
+		const viewport = container.querySelector(".mm-viewport")!;
+
+		svg.dispatchEvent(new WheelEvent("wheel", { deltaY: -100, ctrlKey: true, clientX: 50, clientY: 50, bubbles: true, cancelable: true }));
+		await new Promise((r) => requestAnimationFrame(r));
+
+		// deltaY < 0 zooms in: scale grows from the initial 1.
+		expect(viewport.getAttribute("transform")).toContain("scale(1.1");
+
+		renderer.destroy();
+	});
+
+	it("wheel without ctrlKey (two-finger trackpad swipe) pans and never changes scale", async () => {
+		const model = parseMindMap(["# Root", "## Branch A"].join("\n"), "fallback");
+		computeLayout(model.root);
+
+		const container = document.createElement("div");
+		const renderer = new SvgRenderer(container);
+		renderer.mount(model);
+		const svg = container.querySelector(".mm-svg")!;
+		const viewport = container.querySelector(".mm-viewport")!;
+		const before = viewport.getAttribute("transform")!;
+
+		svg.dispatchEvent(new WheelEvent("wheel", { deltaX: 30, deltaY: 40, ctrlKey: false, clientX: 50, clientY: 50, bubbles: true, cancelable: true }));
+		await new Promise((r) => requestAnimationFrame(r));
+
+		const after = viewport.getAttribute("transform")!;
+		expect(after).not.toBe(before);
+		expect(after).toContain("scale(1)"); // unchanged — panned, not zoomed
+		// tx/ty shift by -deltaX/-deltaY: container defaults to 0-width in jsdom, so tx/ty start at 0.
+		expect(after).toContain("translate(-30, -40)");
 
 		renderer.destroy();
 	});

@@ -30,9 +30,9 @@ export const DEFAULT_LAYOUT_CONFIG: LayoutConfig = {
 	lineHeight: 16,
 	paddingX: 16,
 	mode: "balanced",
-	rootFontSize: 18,
-	fontSizeStep: 2,
-	minFontSize: 10,
+	rootFontSize: 21.6,
+	fontSizeStep: 2.4,
+	minFontSize: 12,
 	baselineFontSize: 12,
 };
 

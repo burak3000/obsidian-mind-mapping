@@ -518,14 +518,18 @@ export class SvgRenderer {
 	}
 
 	/**
-	 * Fold-count badge (R14): computed straight from the already-maintained
+	 * Fold affordance (R14): computed straight from the already-maintained
 	 * `subtreeCount` cache — O(1), never a subtree walk (addendum §4.6).
-	 * Folding is a rare, user-paced action, so this isn't diffed as tightly
-	 * as node/edge updates; the cost is bounded by how many nodes are
-	 * folded, not by tree size.
+	 * Shown on every node that has children, folded or not, so folding is
+	 * discoverable by click rather than keyboard-only: folded shows the
+	 * hidden-descendant count (click to unfold), unfolded shows a plain
+	 * collapse dot (click to fold). Folding is a rare, user-paced action, so
+	 * this isn't diffed as tightly as node/edge updates; the cost is bounded
+	 * by how many *visible* nodes have children, not by tree size (already-
+	 * culled nodes never reach this).
 	 */
 	private upsertBadge(node: MindNode, dom: NodeDom, layout: LayoutSnapshot): void {
-		const shouldShow = node.folded && node.subtreeCount > 0;
+		const shouldShow = node.subtreeCount > 0;
 		if (!shouldShow) {
 			if (dom.badge) {
 				dom.badge.g.remove();
@@ -551,7 +555,8 @@ export class SvgRenderer {
 		const side = node.layout!.side;
 		const badgeX = side === "L" ? 0 : layout.w;
 		dom.badge.g.setAttribute("transform", `translate(${badgeX}, ${layout.h / 2})`);
-		dom.badge.text.textContent = String(node.subtreeCount);
+		dom.badge.g.classList.toggle("mm-fold-badge-folded", node.folded);
+		dom.badge.text.textContent = node.folded ? String(node.subtreeCount) : "–";
 	}
 
 	private upsertEdge(node: MindNode, parent: MindNode): void {
@@ -849,17 +854,29 @@ export class SvgRenderer {
 		if (this.dropTargetId) this.nodeEls.get(this.dropTargetId)?.g.classList.add("mm-drop-target");
 	}
 
+	/**
+	 * Trackpad pinch-to-zoom arrives as a wheel event with `ctrlKey` set
+	 * (Chromium/Electron synthesizes it that way, matching how every other
+	 * canvas app on macOS tells pinch apart from a two-finger swipe — same
+	 * convention Figma/Miro/Excalidraw use). A two-finger swipe is a plain
+	 * wheel event carrying `deltaX`/`deltaY`, so it pans instead of zooming.
+	 */
 	private onWheel = (evt: WheelEvent): void => {
 		evt.preventDefault();
-		const rect = this.svg.getBoundingClientRect();
-		const mx = evt.clientX - rect.left;
-		const my = evt.clientY - rect.top;
-		const worldX = (mx - this.view.tx) / this.view.scale;
-		const worldY = (my - this.view.ty) / this.view.scale;
-		const factor = evt.deltaY < 0 ? 1.1 : 1 / 1.1;
-		this.view.scale = Math.min(MAX_SCALE, Math.max(MIN_SCALE, this.view.scale * factor));
-		this.view.tx = mx - worldX * this.view.scale;
-		this.view.ty = my - worldY * this.view.scale;
+		if (evt.ctrlKey) {
+			const rect = this.svg.getBoundingClientRect();
+			const mx = evt.clientX - rect.left;
+			const my = evt.clientY - rect.top;
+			const worldX = (mx - this.view.tx) / this.view.scale;
+			const worldY = (my - this.view.ty) / this.view.scale;
+			const factor = evt.deltaY < 0 ? 1.1 : 1 / 1.1;
+			this.view.scale = Math.min(MAX_SCALE, Math.max(MIN_SCALE, this.view.scale * factor));
+			this.view.tx = mx - worldX * this.view.scale;
+			this.view.ty = my - worldY * this.view.scale;
+		} else {
+			this.view.tx -= evt.deltaX;
+			this.view.ty -= evt.deltaY;
+		}
 		this.scheduleApplyViewport();
 	};
 

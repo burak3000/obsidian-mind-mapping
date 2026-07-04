@@ -153,14 +153,22 @@
 }
 
 .mm-fold-badge circle {
+	fill: var(--background-modifier-border);
+}
+
+.mm-fold-badge.mm-fold-badge-folded circle {
 	fill: var(--interactive-accent);
 }
 
 .mm-fold-badge text {
-	fill: var(--text-on-accent);
+	fill: var(--text-muted);
 	font-size: 9px;
 	pointer-events: none;
 	user-select: none;
+}
+
+.mm-fold-badge.mm-fold-badge-folded text {
+	fill: var(--text-on-accent);
 }
 
 .mm-inline-editor {
