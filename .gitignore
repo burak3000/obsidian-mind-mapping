@@ -1,0 +1,11 @@
+node_modules/
+dist/
+dev-vault/.obsidian/plugins/mindmap-view/main.js
+dev-vault/.obsidian/plugins/mindmap-view/manifest.json
+dev-vault/.obsidian/plugins/mindmap-view/styles.css
+dev-vault/.obsidian/workspace.json
+dev-vault/.obsidian/workspace-mobile.json
+fixtures/*.md
+dev-vault/fixtures/
+*.log
+.DS_Store

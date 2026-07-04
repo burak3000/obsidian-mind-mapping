@@ -1,0 +1,179 @@
+.mindmap-view-container {
+	position: relative;
+	height: 100%;
+	overflow: hidden;
+}
+
+/*
+ * Per-subtopic branch palette (R9). Two tone sets so branches stay legible
+ * on both light and dark themes (plan N4: theme adaptation) — light theme
+ * uses mid-dark saturated hues readable on a light background; dark theme
+ * uses the lighter shade of the same hue for contrast against a dark one.
+ */
+.mindmap-view-container {
+	--mm-color-c0: #e03131;
+	--mm-color-c1: #1971c2;
+	--mm-color-c2: #2f9e44;
+	--mm-color-c3: #e8590c;
+	--mm-color-c4: #9c36b5;
+	--mm-color-c5: #0c8599;
+	--mm-color-c6: #e64980;
+	--mm-color-c7: #f08c00;
+}
+
+.theme-dark .mindmap-view-container {
+	--mm-color-c0: #ff8787;
+	--mm-color-c1: #4dabf7;
+	--mm-color-c2: #69db7c;
+	--mm-color-c3: #ffa94d;
+	--mm-color-c4: #da77f2;
+	--mm-color-c5: #3bc9db;
+	--mm-color-c6: #f783ac;
+	--mm-color-c7: #ffd43b;
+}
+
+.mindmap-placeholder {
+	padding: var(--size-4-4);
+	color: var(--text-muted);
+}
+
+.mm-svg {
+	display: block;
+	background: var(--background-primary);
+	touch-action: none;
+	cursor: grab;
+}
+
+/* R10, high-fidelity taper: the edge is a filled variable-width ribbon
+   polygon (see SvgRenderer.edgePath), not a stroked line — width is baked
+   into the path geometry itself, so no stroke is drawn. */
+.mm-edge {
+	stroke: none;
+	fill: var(--text-faint);
+}
+
+/* Only the main topic (root) gets a visible box — sub-topics render as bare
+   text over the connecting line, XMind-style. The rect stays in the DOM for
+   every node (hit-testing + the selection/drop-target outline below), just
+   invisible by default; `pointer-events: all` keeps it clickable/draggable
+   even though there's nothing painted to hit-test against. */
+.mm-node-rect {
+	fill: none;
+	stroke: none;
+	pointer-events: all;
+}
+
+.mm-node.mm-node-root .mm-node-rect {
+	fill: var(--background-secondary);
+	stroke: var(--background-modifier-border);
+	stroke-width: 1;
+}
+
+.mm-node-text {
+	fill: var(--text-normal);
+	font-size: 12px;
+	pointer-events: none;
+	user-select: none;
+}
+
+.mm-node {
+	cursor: pointer;
+}
+
+.mm-svg.mm-animated .mm-node {
+	transition: transform 150ms ease;
+}
+
+.mm-edge.mm-color-c0 { fill: var(--mm-color-c0); }
+.mm-edge.mm-color-c1 { fill: var(--mm-color-c1); }
+.mm-edge.mm-color-c2 { fill: var(--mm-color-c2); }
+.mm-edge.mm-color-c3 { fill: var(--mm-color-c3); }
+.mm-edge.mm-color-c4 { fill: var(--mm-color-c4); }
+.mm-edge.mm-color-c5 { fill: var(--mm-color-c5); }
+.mm-edge.mm-color-c6 { fill: var(--mm-color-c6); }
+.mm-edge.mm-color-c7 { fill: var(--mm-color-c7); }
+
+/* Root has no branch color of its own (see resolveNodeColorKey), so these
+   only ever match sub-topics — with no box left to carry a colored border,
+   the branch color accents the text itself instead (plan §9.2: "node
+   border/text accents match branch color"). */
+.mm-node.mm-color-c0 .mm-node-text { fill: var(--mm-color-c0); }
+.mm-node.mm-color-c1 .mm-node-text { fill: var(--mm-color-c1); }
+.mm-node.mm-color-c2 .mm-node-text { fill: var(--mm-color-c2); }
+.mm-node.mm-color-c3 .mm-node-text { fill: var(--mm-color-c3); }
+.mm-node.mm-color-c4 .mm-node-text { fill: var(--mm-color-c4); }
+.mm-node.mm-color-c5 .mm-node-text { fill: var(--mm-color-c5); }
+.mm-node.mm-color-c6 .mm-node-text { fill: var(--mm-color-c6); }
+.mm-node.mm-color-c7 .mm-node-text { fill: var(--mm-color-c7); }
+
+.mm-node-link {
+	fill: var(--link-color, var(--text-accent));
+	text-decoration: underline;
+	pointer-events: auto;
+	cursor: pointer;
+}
+
+.mm-node.mm-drop-target .mm-node-rect {
+	stroke: var(--interactive-accent);
+	stroke-width: 2;
+	stroke-dasharray: 3 2;
+}
+
+/* Selection must win over the root's own default border — kept last in
+   source order (equal specificity to the `.mm-node-root` rule above). For a
+   non-root node this is the *only* time its (normally invisible) box shows
+   an outline at all. */
+.mm-node.mm-selected .mm-node-rect {
+	stroke: var(--interactive-accent);
+	stroke-width: 2;
+}
+
+/* Drag-resize handle: a thin sliver at the node's outer edge. Always
+   present in the DOM (cheap: one small rect per node) and always
+   hit-testable, but only visually surfaced on hover/selection so the
+   "no box" aesthetic (above) isn't cluttered by a resize affordance on
+   every node all the time. */
+.mm-resize-handle {
+	fill: var(--interactive-accent);
+	opacity: 0;
+	cursor: ew-resize;
+	pointer-events: all;
+}
+
+.mm-node:hover .mm-resize-handle,
+.mm-node.mm-selected .mm-resize-handle {
+	opacity: 0.5;
+}
+
+.mm-fold-badge {
+	cursor: pointer;
+}
+
+.mm-fold-badge circle {
+	fill: var(--interactive-accent);
+}
+
+.mm-fold-badge text {
+	fill: var(--text-on-accent);
+	font-size: 9px;
+	pointer-events: none;
+	user-select: none;
+}
+
+.mm-inline-editor {
+	box-sizing: border-box;
+	z-index: 50;
+	font-size: 12px;
+	font-family: inherit;
+	text-align: center;
+	background: var(--background-primary);
+	color: var(--text-normal);
+	border: 1px solid var(--interactive-accent);
+	border-radius: 4px;
+	padding: 2px 4px;
+	outline: none;
+	resize: none;
+	overflow-y: auto;
+	white-space: pre-wrap;
+	line-height: 1.3;
+}
