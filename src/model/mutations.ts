@@ -173,6 +173,64 @@ export function moveNode(model: MindMapModel, nodeId: string, newParentId: strin
 }
 
 /**
+ * Deep-clones a node and its subtree with brand-new ids throughout, so the
+ * clone can coexist with the original in the same model (copy/paste, R-copy).
+ * Detached (`parent: null`) — caller inserts it with `insertSubtree`.
+ * Drops `manualPos`/`branchSide`: those are meaningful only at the original's
+ * specific position in the tree and would misplace/overlap once pasted
+ * elsewhere.
+ */
+export function cloneSubtree(node: MindNode): MindNode {
+	const clone: MindNode = {
+		id: createId(),
+		text: node.text,
+		children: [],
+		parent: null,
+		depth: node.depth,
+		folded: node.folded,
+		colorKey: node.colorKey,
+		manualWidth: node.manualWidth,
+		subtreeCount: 0,
+		attachedContent: node.attachedContent ? [...node.attachedContent] : undefined,
+	};
+	for (const child of node.children) {
+		const childClone = cloneSubtree(child);
+		childClone.parent = clone;
+		clone.children.push(childClone);
+	}
+	clone.subtreeCount = clone.children.reduce((sum, c) => sum + 1 + c.subtreeCount, 0);
+	return clone;
+}
+
+/**
+ * Inserts a detached subtree (from `cloneSubtree`, or previously removed by
+ * `deleteNode`) as a child of `parentId` at `index` (default: end). Fixes up
+ * depth down the inserted subtree only and re-indexes its ids —
+ * O(size of inserted subtree), not O(n).
+ */
+export function insertSubtree(model: MindMapModel, parentId: string, subtreeRoot: MindNode, index?: number): MindNode {
+	const parent = model.byId.get(parentId);
+	if (!parent) throw new Error(`insertSubtree: unknown parent id ${parentId}`);
+
+	subtreeRoot.parent = parent;
+	const depthDelta = parent.depth + 1 - subtreeRoot.depth;
+	if (depthDelta !== 0) {
+		const updateDepth = (n: MindNode) => {
+			n.depth += depthDelta;
+			n.children.forEach(updateDepth);
+		};
+		updateDepth(subtreeRoot);
+	}
+
+	const at = index === undefined ? parent.children.length : index;
+	parent.children.splice(at, 0, subtreeRoot);
+	indexSubtree(subtreeRoot, model.byId);
+	bumpSubtreeCount(parent, 1 + subtreeRoot.subtreeCount);
+	model.version += 1;
+	return subtreeRoot;
+}
+
+/**
  * Clears every manual position pin and every sticky branch-side assignment
  * in the whole tree, so the next layout recomputes a fresh optimal
  * balance from scratch — the "Rebalance" command (plan §9.3).

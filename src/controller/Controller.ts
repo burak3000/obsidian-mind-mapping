@@ -12,6 +12,8 @@ import {
 	clearManualWidth,
 	moveNode,
 	rebalanceAll,
+	cloneSubtree,
+	insertSubtree,
 	RemovedNodeRecord,
 } from "../model/mutations";
 import { CommandStack } from "../model/commandStack";
@@ -32,6 +34,8 @@ export class Controller {
 	private readonly stack = new CommandStack(100);
 	private listeners: ControllerListener[] = [];
 	selectedId: string | null = null;
+	/** In-memory clipboard (Ctrl/Cmd+C/X/V) — a detached, ready-to-clone subtree. Not persisted; cleared on plugin reload. */
+	private clipboard: MindNode | null = null;
 
 	constructor(public model: MindMapModel) {}
 
@@ -155,6 +159,59 @@ export class Controller {
 			},
 		});
 		this.selectedId = parentId;
+		this.emitChange();
+	}
+
+	/** Ctrl/Cmd+C: snapshot the selected node's subtree into the clipboard. Leaves the model untouched (not undoable — there's nothing to undo). */
+	copySelected(): void {
+		if (!this.selectedId) return;
+		const node = this.model.byId.get(this.selectedId);
+		if (!node) return;
+		this.clipboard = cloneSubtree(node);
+	}
+
+	/** Ctrl/Cmd+X: like deleteSelected, but stashes a clone in the clipboard first so a later paste can restore it elsewhere. No-op on the root. */
+	cutSelected(): void {
+		if (!this.selectedId) return;
+		const node = this.model.byId.get(this.selectedId);
+		if (!node || !node.parent) return;
+		this.clipboard = cloneSubtree(node);
+		const nodeId = this.selectedId;
+		const parentId = node.parent.id;
+		let record: RemovedNodeRecord | null = null;
+		this.stack.execute({
+			do: () => {
+				record = deleteNode(this.model, nodeId);
+			},
+			undo: () => {
+				if (record) restoreNode(this.model, record);
+			},
+		});
+		this.selectedId = parentId;
+		this.emitChange();
+	}
+
+	/**
+	 * Ctrl/Cmd+V: inserts a fresh clone of the clipboard as the last child of
+	 * the selected node (or the root, if nothing is selected). Paste can be
+	 * repeated — each call clones the clipboard again with new ids, so
+	 * pasting the same cut/copy into multiple targets works.
+	 */
+	pasteToSelected(): void {
+		if (!this.clipboard) return;
+		const parentId = this.selectedId ?? this.model.root.id;
+		if (!this.model.byId.has(parentId)) return;
+		const toInsert = cloneSubtree(this.clipboard);
+		let insertedId = "";
+		this.stack.execute({
+			do: () => {
+				insertedId = insertSubtree(this.model, parentId, toInsert).id;
+			},
+			undo: () => {
+				if (insertedId) deleteNode(this.model, insertedId);
+			},
+		});
+		this.selectedId = insertedId;
 		this.emitChange();
 	}
 

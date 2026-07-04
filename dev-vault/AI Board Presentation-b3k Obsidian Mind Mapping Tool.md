@@ -128,7 +128,7 @@ b3k Obsidian Mind Mapping Tool
 - resides in my repo in code siemens
   - can be checked later by other people
   - we can asses it against anything required
-## how to properly use it 
+## how to properly use it
 - one time action
   - setup obsidian
     - install this plugin

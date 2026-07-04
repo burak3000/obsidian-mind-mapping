@@ -309,6 +309,15 @@ export class MindMapView extends TextFileView implements ControllerListener {
 		} else if (mod && evt.key.toLowerCase() === "k") {
 			evt.preventDefault();
 			if (this.controller.selectedId) this.openLinkEditor(this.controller.selectedId);
+		} else if (mod && evt.key.toLowerCase() === "c") {
+			evt.preventDefault();
+			this.controller.copySelected();
+		} else if (mod && evt.key.toLowerCase() === "x") {
+			evt.preventDefault();
+			this.controller.cutSelected();
+		} else if (mod && evt.key.toLowerCase() === "v") {
+			evt.preventDefault();
+			this.controller.pasteToSelected();
 		}
 	}
 

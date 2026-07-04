@@ -172,4 +172,121 @@ describe("Controller", () => {
 		controller.revealAndSelect("does-not-exist");
 		expect(controller.selectedId).toBe(controller.model.root.id);
 	});
+
+	it("copy then paste inserts a cloned subtree (new ids) as the last child of the selected target, leaving the original in place", () => {
+		const controller = makeController();
+		const branchA = controller.model.root.children[0];
+		const branchB = controller.model.root.children[1];
+		controller.select(branchA.id);
+
+		controller.copySelected();
+		expect(branchA.children.length).toBe(1); // copy doesn't touch the model
+
+		controller.select(branchB.id);
+		controller.pasteToSelected();
+
+		expect(branchB.children.length).toBe(1);
+		const pasted = branchB.children[0];
+		expect(pasted.text).toBe(branchA.text);
+		expect(pasted.id).not.toBe(branchA.id);
+		expect(pasted.children.map((c) => c.text)).toEqual(branchA.children.map((c) => c.text));
+		expect(pasted.children[0].id).not.toBe(branchA.children[0].id);
+		expect(controller.selectedId).toBe(pasted.id);
+		// original untouched
+		expect(controller.model.byId.has(branchA.id)).toBe(true);
+		expect(branchA.parent).toBe(controller.model.root);
+	});
+
+	it("paste can be repeated, cloning fresh ids each time", () => {
+		const controller = makeController();
+		const branchA = controller.model.root.children[0];
+		const branchB = controller.model.root.children[1];
+		controller.select(branchA.id);
+		controller.copySelected();
+
+		controller.select(branchB.id);
+		controller.pasteToSelected();
+		const first = controller.selectedId;
+		controller.select(branchB.id);
+		controller.pasteToSelected();
+		const second = controller.selectedId;
+
+		expect(first).not.toBe(second);
+		expect(branchB.children.length).toBe(2);
+	});
+
+	it("cut removes the node+subtree (undoably, like delete) and pasting elsewhere re-inserts a clone", () => {
+		const controller = makeController();
+		const branchA = controller.model.root.children[0];
+		const childA = branchA.children[0];
+		const branchB = controller.model.root.children[1];
+		controller.select(childA.id);
+
+		controller.cutSelected();
+		expect(branchA.children.length).toBe(0);
+		expect(controller.model.byId.has(childA.id)).toBe(false);
+		expect(controller.selectedId).toBe(branchA.id);
+
+		controller.select(branchB.id);
+		controller.pasteToSelected();
+
+		expect(branchB.children.length).toBe(1);
+		expect(branchB.children[0].text).toBe(childA.text);
+		expect(branchB.children[0].id).not.toBe(childA.id);
+	});
+
+	it("cut is undoable independently of paste", () => {
+		const controller = makeController();
+		const branchA = controller.model.root.children[0];
+		const childA = branchA.children[0];
+		controller.select(childA.id);
+
+		controller.cutSelected();
+		expect(branchA.children.length).toBe(0);
+
+		controller.undo();
+		expect(branchA.children.length).toBe(1);
+		expect(branchA.children[0]).toBe(childA);
+	});
+
+	it("cutSelected cannot cut the root", () => {
+		const controller = makeController();
+		controller.select(controller.model.root.id);
+		controller.cutSelected();
+		expect(controller.model.byId.has(controller.model.root.id)).toBe(true);
+	});
+
+	it("pasteToSelected with nothing selected pastes as a child of the root", () => {
+		const controller = makeController();
+		const branchA = controller.model.root.children[0];
+		controller.select(branchA.id);
+		controller.copySelected();
+
+		controller.select(null);
+		controller.pasteToSelected();
+
+		const pasted = controller.model.root.children[controller.model.root.children.length - 1];
+		expect(pasted.text).toBe(branchA.text);
+	});
+
+	it("pasteToSelected is a no-op when the clipboard is empty", () => {
+		const controller = makeController();
+		const before = controller.model.root.subtreeCount;
+		controller.pasteToSelected();
+		expect(controller.model.root.subtreeCount).toBe(before);
+	});
+
+	it("paste is undoable", () => {
+		const controller = makeController();
+		const branchA = controller.model.root.children[0];
+		const branchB = controller.model.root.children[1];
+		controller.select(branchA.id);
+		controller.copySelected();
+		controller.select(branchB.id);
+		controller.pasteToSelected();
+		expect(branchB.children.length).toBe(1);
+
+		controller.undo();
+		expect(branchB.children.length).toBe(0);
+	});
 });
