@@ -122,6 +122,16 @@
 	stroke-dasharray: 3 2;
 }
 
+/* Same-level reorder (drag a node and drop it near the top/bottom edge of a
+   sibling instead of on its center): a plain insertion line spanning the
+   target's width, not a highlight box — that's what distinguishes "reorder
+   next to" from "nest into" (.mm-drop-target above) at a glance. */
+.mm-drop-indicator {
+	stroke: var(--interactive-accent);
+	stroke-width: 2;
+	pointer-events: none;
+}
+
 /* Selection must win over the root's own default border — kept last in
    source order (equal specificity to the `.mm-node-root` rule above). For a
    non-root node this is the *only* time its (normally invisible) box shows
@@ -129,6 +139,14 @@
 .mm-node.mm-selected .mm-node-rect {
 	stroke: var(--interactive-accent);
 	stroke-width: 2;
+}
+
+/* Multi-select (R-multi-select): every selected node gets the outline
+   above; the primary/anchor additionally gets a thicker one so it stays
+   visually distinct (keyboard nav, inline-editor, and Shift+click range
+   anchor all target the primary specifically). */
+.mm-node.mm-selected-primary .mm-node-rect {
+	stroke-width: 3;
 }
 
 /* Drag-resize handle: a thin sliver at the node's outer edge. Always
@@ -169,6 +187,44 @@
 
 .mm-fold-badge.mm-fold-badge-folded text {
 	fill: var(--text-on-accent);
+}
+
+/* Image thumbnail (R-image-display, decision A: fixed-size thumb, click
+   opens the image). Placeholder shows until the image loads; the missing
+   glyph only shows on a load error (both toggled by the group's own
+   mm-image-loaded/mm-image-error class, set by the <image>'s load/error
+   listeners — no JS-driven style writes beyond those two class toggles). */
+.mm-node-image {
+	cursor: pointer;
+	display: none;
+}
+
+.mm-image-placeholder {
+	fill: var(--background-modifier-border);
+}
+
+.mm-node-image-group.mm-image-loaded .mm-image-placeholder {
+	display: none;
+}
+
+.mm-node-image-group.mm-image-loaded .mm-node-image {
+	display: inline;
+}
+
+.mm-image-missing {
+	display: none;
+	fill: var(--text-error);
+	font-size: 20px;
+	pointer-events: none;
+	user-select: none;
+}
+
+.mm-node-image-group.mm-image-error .mm-image-missing {
+	display: inline;
+}
+
+.mm-node-image-group.mm-image-error .mm-image-placeholder {
+	fill: var(--background-modifier-error);
 }
 
 .mm-inline-editor {

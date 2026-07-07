@@ -1,0 +1,115 @@
+---
+mindmap:
+  nodes:
+    ^wwiyf0: { width: 372.2703125000001 }
+    ^bc645b: { width: 74.165625 }
+---
+# SBOM in TIA Release Pipeline
+
+## Goal
+- Creating a scoring output out of generated SBOM file in build drop
+- Overall process in high level
+  - Get drop SBOM file as input string
+  - Perform the steps
+## Overall process in high level
+- Get drop SBOM file as input string
+  - 
+    - ![[Pasted image 20260707174039.png]]
+      - 
+- Perform the steps
+  - sadfdsfa ![[Pasted image 20260707173413.png]]
+## Steps
+- Read SBOM
+  - <<interface>> ISbomRetriever
+    - methods
+      - RetrieveSbom
+        - input
+          - RetrieveParams
+            - there can be several RetrieveParams types
+              - like
+                - DropSbomRetrieveParams
+                  - SbomFullInputPath
+                - ApiSbomRetrieveParams
+        - output
+          - RetrieveSbomResult
+            - contains information to match with scoring results
+              - see the sample sbom at: D:\WS\3rd-party-due-dilligence\inputs\sample.json
+    - implementors
+      - DropSbomRetriever
+        - reads the file as in stated DropSbomRetrieveParams(this will be casted from RetrieveParams)
+        - converts them to the RetrieveSbomResult
+- Get the latest scores from our answers results json
+  - one interface for all of the fetch handling called IComponentScoresFetcher ^wwiyf0
+    - <<interface>>IComponentsScoresFetcher
+      - methods
+        - FetchComponentsScores
+          - input
+            - FetchComponentsScoresParams
+          - output
+            - FetchComponentsScoresResult
+              - list of
+                - DueDiligenceComponent
+                  - C:\users\z0040duz\Downloads\scores.json
+                    - get
+                      - all of the component node
+                      - final score
+                      - valid until
+                      - answered by
+                      - all of the questionnaire node
+      - implementors
+        - SampleScoresFetcher
+          - reads the data from a sample json file
+            - it will be placed next to the main executable
+            - its name will be scores.sjon
+            - to understand its format sample one is available at downloads
+        - CodeSiemensFetcher
+          - later we'll find it from code.siemens.com or artifactory
+            - add its class that implements the interface but do not implement it for now
+- Evaluate scores
+  - <<interface>>IDueDiligenceEvaluator
+    - methods
+      - EvaluateComponentScores
+        - input
+          - RetrieveSbomResult
+          - FetchSbomResult
+        - output
+          - ComponentScores
+            - some meta info
+            - list of
+              - ComponentScore
+                - component name
+                - component version
+                - score of the component
+        - what it does
+          - find matching components and acquire their scores
+            - checks all the matching components in drop SBOM and fetched scores
+          - create a result document that shows all the scores belong to the components in the drop sbom
+- Persist results ^bc645b
+  - <<interface>>IThirdPartyDueDiligenceResultPersistor
+    - methods
+      - PersistResults
+        - input
+          - PersistParams
+        - output
+          - PersistResult
+            - bool Success
+        - what it does
+          - persists the result according to implementation
+    - implementors
+      - FileSystemPersistor
+        - input
+          - FileSystemPersistParams
+            - implements
+              - PersistParams
+            - MockWrite
+              - if it is true, just writes an message but does not write actually
+            - FilePath
+        - output
+          - FileSystemPersistResult
+            - bool Success
+      - RemoteRepoPersistor
+        - create the class but do not implement it
+      - DbPersistor
+        - create the class but do not implement it
+- 
+- 

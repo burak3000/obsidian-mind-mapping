@@ -1,15 +1,16 @@
-import { MindMapModel, MindNode, NodeLayout } from "../model/types";
+import { DropPosition, MindMapModel, MindNode, NodeLayout } from "../model/types";
 import { collectVisibleNodes } from "../model/visibility";
 import { resolveNodeColorKey, strokeWidthForDepth } from "./colors";
-import { LinkKind, parseTextSegments } from "../model/links";
+import { LinkKind, getImageEmbed, parseTextSegments } from "../model/links";
 import { wrapText, WordToken } from "../model/textWrap";
-import { DEFAULT_LAYOUT_CONFIG, LayoutConfig, defaultWrapWidthForDepth, fontSizeForDepth, scaleForDepth } from "../layout/layoutEngine";
+import { DEFAULT_LAYOUT_CONFIG, LayoutConfig, NodeBoxConfig, computeNodeBox, defaultWrapWidthForDepth, fontSizeForDepth, scaleForDepth } from "../layout/layoutEngine";
 
-/** Only the text-metric fields the renderer needs to reproduce layoutEngine's exact wrap points and depth-based font sizing — kept narrow so the renderer doesn't depend on layout-mode fields it has no use for. */
+/** Only the text-metric fields the renderer needs to reproduce layoutEngine's exact wrap points and depth-based font sizing (plus image-thumb geometry, R-image-display) — kept narrow so the renderer doesn't depend on layout-mode fields it has no use for. */
 export type TextMetricsConfig = Pick<
 	LayoutConfig,
 	"charWidth" | "paddingX" | "maxCharsPerLine" | "lineHeight" | "nodeHeight" | "minNodeWidth" | "rootFontSize" | "fontSizeStep" | "minFontSize" | "baselineFontSize"
->;
+> &
+	NodeBoxConfig;
 
 const SVG_NS = "http://www.w3.org/2000/svg";
 
@@ -25,6 +26,14 @@ interface BadgeDom {
 	text: SVGTextElement;
 }
 
+/** Image thumbnail (R-image-display, decision A: fixed-size thumb, click to open). `placeholder` shows until `image` loads (or permanently, with `missing` on top, if it errors) — created lazily, only for nodes whose text actually has an image embed. */
+interface ImageDom {
+	g: SVGGElement;
+	placeholder: SVGRectElement;
+	image: SVGImageElement;
+	missing: SVGTextElement;
+}
+
 interface NodeDom {
 	g: SVGGElement;
 	rect: SVGRectElement;
@@ -32,6 +41,7 @@ interface NodeDom {
 	resizeHandle: SVGRectElement;
 	colorClass: string | null;
 	badge: BadgeDom | null;
+	image: ImageDom | null;
 }
 
 interface LayoutSnapshot {
@@ -184,19 +194,33 @@ export class SvgRenderer {
 	private dragging = false;
 	private lastPointerX = 0;
 	private lastPointerY = 0;
-	private selectedId: string | null = null;
+	private panStartX = 0;
+	private panStartY = 0;
+	/** Set at pointerup when a background pointerdown/up pair moved more than the click threshold (an actual pan, not a click) — the native `click` event that follows still fires regardless, so `onClick` checks this to avoid clearing the selection after every pan gesture. */
+	private suppressNextBackgroundClick = false;
+	private selectedIds: Set<string> = new Set();
+	private primaryId: string | null = null;
 
-	private onNodeClick: ((nodeId: string) => void) | null = null;
+	private onNodeClick: ((nodeId: string, evt: MouseEvent) => void) | null = null;
 	private onNodeDblClick: ((nodeId: string) => void) | null = null;
 	private onBadgeClick: ((nodeId: string) => void) | null = null;
+	/** Fired on a plain click that lands on empty canvas (not a node/badge/link) — lets the caller clear the current selection, giving visible confirmation that the canvas itself received the click (see: users couldn't tell whether clicking the background did anything). */
+	private onBackgroundClick: (() => void) | null = null;
 	private onLinkClick: ((kind: LinkKind, target: string) => void) | null = null;
+	private onImageClick: ((kind: LinkKind, target: string) => void) | null = null;
 	private onManualMove: ((nodeId: string, pos: { x: number; y: number }) => void) | null = null;
-	private onReorder: ((nodeId: string, newParentId: string) => void) | null = null;
+	private onReorder: ((nodeId: string, targetId: string, position: DropPosition) => void) | null = null;
 	private onManualWidth: ((nodeId: string, width: number) => void) | null = null;
+	private onNodeContextMenu: ((nodeId: string, evt: MouseEvent) => void) | null = null;
+	/** Resolves an image embed to a displayable URL — needs `app.metadataCache`/`app.vault`, so it's supplied by the view layer rather than imported here (same reasoning as every other Obsidian-API-dependent callback in this class). */
+	private imageResolver: ((node: MindNode) => string | null) | null = null;
 
 	private dragNode: { nodeId: string; manual: boolean; startClientX: number; startClientY: number; origX: number; origY: number } | null = null;
 	private resizeNode: { nodeId: string; side: "L" | "R"; startClientX: number; origX: number; origWidth: number } | null = null;
 	private dropTargetId: string | null = null;
+	private dropPosition: DropPosition | null = null;
+	/** Insertion line shown for a "before"/"after" (same-level reorder) drop — a plain highlight box on the target (as used for "inside") can't distinguish "nest into" from "reorder next to", so this draws a separate line at the target's top/bottom edge instead. Hidden (no `y1`/`y2` set, `display: none`) whenever `dropPosition` isn't "before"/"after". */
+	private readonly dropIndicator: SVGLineElement;
 
 	private lastModel: MindMapModel | null = null;
 	private cullingActive = false;
@@ -226,6 +250,11 @@ export class SvgRenderer {
 		this.nodesG.classList.add("mm-nodes");
 		this.viewportG.appendChild(this.nodesG);
 
+		this.dropIndicator = el("line");
+		this.dropIndicator.classList.add("mm-drop-indicator");
+		this.dropIndicator.style.display = "none";
+		this.viewportG.appendChild(this.dropIndicator);
+
 		// Center horizontally rather than pinning root near the left edge:
 		// balanced layout (M3) can put branches on either side of the root.
 		this.view = { tx: container.clientWidth / 2, ty: container.clientHeight / 2, scale: 1 };
@@ -237,10 +266,21 @@ export class SvgRenderer {
 		this.svg.addEventListener("pointerleave", this.onPointerUp);
 		this.svg.addEventListener("wheel", this.onWheel, { passive: false });
 		this.svg.addEventListener("click", this.onClick);
+		this.svg.addEventListener("contextmenu", this.onContextMenu);
 	}
 
-	setNodeClickHandler(fn: (nodeId: string) => void): void {
+	/** `evt` is passed through so the caller can read modifier keys (Ctrl/Cmd = toggle, Shift = range — R-multi-select). */
+	setNodeClickHandler(fn: (nodeId: string, evt: MouseEvent) => void): void {
 		this.onNodeClick = fn;
+	}
+
+	setNodeContextMenuHandler(fn: (nodeId: string, evt: MouseEvent) => void): void {
+		this.onNodeContextMenu = fn;
+	}
+
+	/** R-image-display: called once per node whose box has an image embed (on creation, and whenever its text/size/side changes) to get the URL to load. Returning null leaves the placeholder/missing-glyph showing. */
+	setImageResolver(fn: (node: MindNode) => string | null): void {
+		this.imageResolver = fn;
 	}
 
 	setNodeDblClickHandler(fn: (nodeId: string) => void): void {
@@ -251,8 +291,18 @@ export class SvgRenderer {
 		this.onBadgeClick = fn;
 	}
 
+	/** Plain click on empty canvas (not panned) — see `onBackgroundClick`. */
+	setBackgroundClickHandler(fn: () => void): void {
+		this.onBackgroundClick = fn;
+	}
+
 	setLinkClickHandler(fn: (kind: LinkKind, target: string) => void): void {
 		this.onLinkClick = fn;
+	}
+
+	/** R-image-display: fired when the image thumbnail itself is clicked — kept separate from `setLinkClickHandler` because the two should navigate differently (a new tab for an image, so the map stays open; the current tab for a regular link click). */
+	setImageClickHandler(fn: (kind: LinkKind, target: string) => void): void {
+		this.onImageClick = fn;
 	}
 
 	/** Alt+drag (R12): fired once on drop with the node's final absolute position. */
@@ -260,8 +310,12 @@ export class SvgRenderer {
 		this.onManualMove = fn;
 	}
 
-	/** Plain drag (drag-reorder): fired once on drop with the node dropped onto. */
-	setReorderHandler(fn: (nodeId: string, newParentId: string) => void): void {
+	/**
+	 * Plain drag (drag-reorder): fired once on drop with the node dropped
+	 * onto and where relative to it — `"inside"` nests as its last child,
+	 * `"before"`/`"after"` reorders as its sibling (same-level reorder).
+	 */
+	setReorderHandler(fn: (nodeId: string, targetId: string, position: DropPosition) => void): void {
 		this.onReorder = fn;
 	}
 
@@ -385,9 +439,10 @@ export class SvgRenderer {
 			g.appendChild(resizeHandle);
 
 			this.nodesG.appendChild(g);
-			dom = { g, rect, text, resizeHandle, colorClass: null, badge: null };
+			dom = { g, rect, text, resizeHandle, colorClass: null, badge: null, image: null };
 			this.nodeEls.set(node.id, dom);
-			if (node.id === this.selectedId) g.classList.add("mm-selected");
+			if (this.selectedIds.has(node.id)) g.classList.add("mm-selected");
+			if (node.id === this.primaryId) g.classList.add("mm-selected-primary");
 		}
 
 		const prevLayout = this.lastLayout.get(node.id);
@@ -420,6 +475,7 @@ export class SvgRenderer {
 
 		if (this.lastText.get(node.id) !== node.text || sizeChanged || sideChanged) {
 			this.renderNodeText(dom.text, node);
+			this.upsertImage(dom, node);
 			this.lastText.set(node.id, node.text);
 		}
 
@@ -559,6 +615,75 @@ export class SvgRenderer {
 		dom.badge.text.textContent = node.folded ? String(node.subtreeCount) : "–";
 	}
 
+	/**
+	 * Image thumbnail (R-image-display): only called when text/size/side
+	 * actually changed (same gate as `renderNodeText`), since it re-derives
+	 * `imageBox` via `computeNodeBox` — real work (a wrap pass), not a cheap
+	 * per-call check like `upsertBadge`'s. Creates the placeholder/image/
+	 * missing-glyph group lazily, only for nodes whose text has an image
+	 * embed; removes it if a previously-embedded node's text no longer does.
+	 * `href` assignment (the actual network/decode trigger) rides along
+	 * with the existing culling mechanism for free: above the culling
+	 * threshold, an off-screen node's whole DOM (this included) doesn't
+	 * exist at all until it scrolls into view and `upsertNode` creates it.
+	 */
+	private upsertImage(dom: NodeDom, node: MindNode): void {
+		const box = computeNodeBox(node.text, this.textCfg, node.depth, node.manualWidth);
+		if (!box.imageBox) {
+			if (dom.image) {
+				dom.image.g.remove();
+				dom.image = null;
+			}
+			return;
+		}
+
+		if (!dom.image) {
+			const g = el("g");
+			g.classList.add("mm-node-image-group");
+
+			const placeholder = el("rect");
+			placeholder.setAttribute("rx", "4");
+			placeholder.classList.add("mm-image-placeholder");
+			g.appendChild(placeholder);
+
+			const image = el("image");
+			image.classList.add("mm-node-image");
+			g.appendChild(image);
+
+			const missing = el("text");
+			missing.classList.add("mm-image-missing");
+			missing.setAttribute("text-anchor", "middle");
+			missing.setAttribute("dominant-baseline", "central");
+			missing.textContent = "?";
+			g.appendChild(missing);
+
+			image.addEventListener("load", () => g.classList.add("mm-image-loaded"));
+			image.addEventListener("error", () => g.classList.add("mm-image-error"));
+
+			dom.g.appendChild(g);
+			dom.image = { g, placeholder, image, missing };
+		}
+
+		const { x, y, w, h } = box.imageBox;
+		dom.image.g.classList.remove("mm-image-loaded", "mm-image-error");
+		dom.image.g.setAttribute("transform", `translate(${x}, ${y})`);
+		for (const shape of [dom.image.placeholder, dom.image.image]) {
+			shape.setAttribute("width", String(w));
+			shape.setAttribute("height", String(h));
+		}
+		dom.image.missing.setAttribute("x", String(w / 2));
+		dom.image.missing.setAttribute("y", String(h / 2));
+		dom.image.image.setAttribute("preserveAspectRatio", "xMidYMid slice");
+
+		const embed = getImageEmbed(node.text)!;
+		dom.image.image.dataset.linkKind = embed.kind;
+		dom.image.image.dataset.linkTarget = embed.target;
+
+		const url = this.imageResolver?.(node) ?? null;
+		if (url) dom.image.image.setAttribute("href", url);
+		else dom.image.image.removeAttribute("href");
+	}
+
 	private upsertEdge(node: MindNode, parent: MindNode): void {
 		let edge = this.edgeEls.get(node.id);
 		let colorClass: string | null = null;
@@ -595,14 +720,35 @@ export class SvgRenderer {
 		}
 	}
 
+	/** Single-selection convenience — the plain-click/keyboard-nav case. Implemented in terms of `setSelection` so both paths share one restyle mechanism. */
 	selectNode(id: string | null): void {
-		if (this.selectedId) this.nodeEls.get(this.selectedId)?.g.classList.remove("mm-selected");
-		this.selectedId = id;
-		if (this.selectedId) this.nodeEls.get(this.selectedId)?.g.classList.add("mm-selected");
+		this.setSelection(id ? new Set([id]) : new Set(), id);
+	}
+
+	/**
+	 * Multi-select-aware selection styling (R-multi-select): every selected
+	 * node gets `.mm-selected` (same look single-selection always had), the
+	 * primary additionally gets `.mm-selected-primary` (an accent on top).
+	 * Restyles only the symmetric difference between the old and new sets —
+	 * O(Δselection), never O(visible) — so a large selection doesn't cost
+	 * more than the handful of nodes that actually changed state.
+	 */
+	setSelection(ids: Set<string>, primaryId: string | null): void {
+		for (const id of this.selectedIds) {
+			if (!ids.has(id)) this.nodeEls.get(id)?.g.classList.remove("mm-selected");
+		}
+		for (const id of ids) {
+			if (!this.selectedIds.has(id)) this.nodeEls.get(id)?.g.classList.add("mm-selected");
+		}
+		if (this.primaryId && this.primaryId !== primaryId) this.nodeEls.get(this.primaryId)?.g.classList.remove("mm-selected-primary");
+		if (primaryId && primaryId !== this.primaryId) this.nodeEls.get(primaryId)?.g.classList.add("mm-selected-primary");
+
+		this.selectedIds = new Set(ids);
+		this.primaryId = primaryId;
 	}
 
 	getSelectedId(): string | null {
-		return this.selectedId;
+		return this.primaryId;
 	}
 
 	/**
@@ -627,6 +773,25 @@ export class SvgRenderer {
 			top: offsetY + this.view.ty + layout.y * this.view.scale,
 			width: layout.w * this.view.scale,
 			height: layout.h * this.view.scale,
+		};
+	}
+
+	/**
+	 * Screen-px sizing hints for the inline editor overlay on `node`: the
+	 * wrap ceiling it should grow width up to (mirrors `wrapCeilingFor`,
+	 * scaled by the current zoom), a sane minimum width for an empty node
+	 * (~16 chars at the node's own scaled char width), and the depth-scaled
+	 * font size — so the overlay's text metrics and growth ceiling agree
+	 * with what `renderNodeText`/`computeNodeBox` will actually do on
+	 * commit, instead of soft-wrapping at the node's pre-edit (possibly
+	 * `minNodeWidth`-only, for a fresh empty node) box width.
+	 */
+	getNodeEditMetrics(node: MindNode): { minWidth: number; maxWidth: number; fontSize: number } {
+		const depthScale = scaleForDepth(node.depth, this.textCfg);
+		return {
+			minWidth: 16 * this.textCfg.charWidth * depthScale * this.view.scale,
+			maxWidth: this.wrapCeilingFor(node) * this.view.scale,
+			fontSize: fontSizeForDepth(node.depth, this.textCfg) * this.view.scale,
 		};
 	}
 
@@ -662,6 +827,7 @@ export class SvgRenderer {
 		this.svg.removeEventListener("pointerleave", this.onPointerUp);
 		this.svg.removeEventListener("wheel", this.onWheel);
 		this.svg.removeEventListener("click", this.onClick);
+		this.svg.removeEventListener("contextmenu", this.onContextMenu);
 		if (this.rafHandle !== null) cancelAnimationFrame(this.rafHandle);
 		while (this.container.firstChild) this.container.removeChild(this.container.firstChild);
 	}
@@ -717,6 +883,8 @@ export class SvgRenderer {
 		this.dragging = true;
 		this.lastPointerX = evt.clientX;
 		this.lastPointerY = evt.clientY;
+		this.panStartX = evt.clientX;
+		this.panStartY = evt.clientY;
 		this.capturePointer(evt.pointerId);
 	};
 
@@ -774,7 +942,8 @@ export class SvgRenderer {
 				dom?.g.setAttribute("transform", `translate(${this.dragNode.origX + dx}, ${this.dragNode.origY + dy})`);
 			} else {
 				const targetId = this.findNodeUnderPoint(evt.clientX, evt.clientY, this.dragNode.nodeId);
-				this.setDropTarget(targetId);
+				const position = targetId ? this.computeDropPosition(targetId, evt.clientY) : null;
+				this.setDropTarget(targetId, position);
 			}
 			return;
 		}
@@ -822,8 +991,9 @@ export class SvgRenderer {
 				this.onManualMove?.(nodeId, { x: origX + dx, y: origY + dy });
 			} else if (moved) {
 				const targetId = this.findNodeUnderPoint(evt.clientX, evt.clientY, nodeId);
-				this.setDropTarget(null);
-				if (targetId) this.onReorder?.(nodeId, targetId);
+				const position = targetId ? this.computeDropPosition(targetId, evt.clientY) : null;
+				this.setDropTarget(null, null);
+				if (targetId && position) this.onReorder?.(nodeId, targetId, position);
 			} else {
 				// Not a real drag (just a click that happened to fire pointerdown
 				// on a node) — restore the DOM transform in case a manual-drag
@@ -832,6 +1002,9 @@ export class SvgRenderer {
 				dom?.g.setAttribute("transform", `translate(${origX}, ${origY})`);
 			}
 			return;
+		}
+		if (this.dragging) {
+			this.suppressNextBackgroundClick = Math.abs(evt.clientX - this.panStartX) > 3 || Math.abs(evt.clientY - this.panStartY) > 3;
 		}
 		this.dragging = false;
 	};
@@ -847,11 +1020,48 @@ export class SvgRenderer {
 		return null;
 	}
 
-	private setDropTarget(nodeId: string | null): void {
-		if (this.dropTargetId === nodeId) return;
+	/**
+	 * Splits the target node's box into three horizontal bands so a plain
+	 * drag can distinguish "nest into" (middle half) from "reorder as
+	 * sibling before/after" (top/bottom quarters) — the same three-way split
+	 * most outliner UIs use (VS Code's explorer, Notion, etc). Falls back to
+	 * `"inside"` when the target is the root (nothing to be a sibling of) or
+	 * its box can't be measured (e.g. jsdom in tests, where
+	 * `getBoundingClientRect` reports zero height).
+	 */
+	private computeDropPosition(targetId: string, clientY: number): DropPosition {
+		const target = this.lastModel?.byId.get(targetId);
+		if (!target?.parent) return "inside";
+		const rect = this.nodeEls.get(targetId)?.rect.getBoundingClientRect();
+		if (!rect || rect.height <= 0) return "inside";
+		const frac = (clientY - rect.top) / rect.height;
+		if (frac < 0.25) return "before";
+		if (frac > 0.75) return "after";
+		return "inside";
+	}
+
+	private setDropTarget(nodeId: string | null, position: DropPosition | null): void {
+		if (this.dropTargetId === nodeId && this.dropPosition === position) return;
 		if (this.dropTargetId) this.nodeEls.get(this.dropTargetId)?.g.classList.remove("mm-drop-target");
 		this.dropTargetId = nodeId;
-		if (this.dropTargetId) this.nodeEls.get(this.dropTargetId)?.g.classList.add("mm-drop-target");
+		this.dropPosition = position;
+		if (nodeId && position === "inside") this.nodeEls.get(nodeId)?.g.classList.add("mm-drop-target");
+		this.updateDropIndicator();
+	}
+
+	/** Positions the "before"/"after" insertion line at the target's top/bottom edge, in the same world-space coordinates node boxes use (see `lastLayout`) — hidden whenever the current drop isn't a same-level reorder. */
+	private updateDropIndicator(): void {
+		const layout = this.dropTargetId ? this.lastLayout.get(this.dropTargetId) : undefined;
+		if (!layout || (this.dropPosition !== "before" && this.dropPosition !== "after")) {
+			this.dropIndicator.style.display = "none";
+			return;
+		}
+		const y = this.dropPosition === "before" ? layout.y : layout.y + layout.h;
+		this.dropIndicator.setAttribute("x1", String(layout.x));
+		this.dropIndicator.setAttribute("x2", String(layout.x + layout.w));
+		this.dropIndicator.setAttribute("y1", String(y));
+		this.dropIndicator.setAttribute("y2", String(y));
+		this.dropIndicator.style.display = "";
 	}
 
 	/**
@@ -931,10 +1141,21 @@ export class SvgRenderer {
 			this.onLinkClick?.(link.dataset.linkKind as LinkKind, link.dataset.linkTarget);
 			return;
 		}
+		// Image thumbnail (R-image-display, decision A: click opens the image
+		// in a new tab, unlike a regular link click which navigates the
+		// current one — so this gets its own callback rather than reusing
+		// onLinkClick, even though the kind/target shape is identical).
+		const image = target.closest(".mm-node-image") as SVGElement | null;
+		if (image?.dataset.linkKind && image.dataset.linkTarget) {
+			this.onImageClick?.(image.dataset.linkKind as LinkKind, image.dataset.linkTarget);
+			return;
+		}
 		const nodeG = target.closest(".mm-node") as SVGGElement | null;
 		const nodeId = nodeG?.dataset.nodeId;
 		if (!nodeId) {
 			this.lastClickNodeId = null;
+			if (this.suppressNextBackgroundClick) this.suppressNextBackgroundClick = false;
+			else this.onBackgroundClick?.();
 			return;
 		}
 
@@ -946,6 +1167,16 @@ export class SvgRenderer {
 		}
 		this.lastClickTime = now;
 		this.lastClickNodeId = nodeId;
-		this.onNodeClick?.(nodeId);
+		this.onNodeClick?.(nodeId, evt);
+	};
+
+	/** Right-click (R-context-menu): not affected by the pointer-capture retargeting `resolveClickOrigin` works around above (a context-menu right-click doesn't participate in the drag pointer-capture flow), so a plain `evt.target.closest` hit-test — same as `onPointerDown` — is enough. */
+	private onContextMenu = (evt: MouseEvent): void => {
+		const target = evt.target as Element;
+		const nodeG = target.closest(".mm-node") as SVGGElement | null;
+		const nodeId = nodeG?.dataset.nodeId;
+		if (!nodeId) return;
+		evt.preventDefault();
+		this.onNodeContextMenu?.(nodeId, evt);
 	};
 }

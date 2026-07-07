@@ -37,7 +37,8 @@ export function serializeMindMap(model: MindMapModel, cfg: SerializeConfig = DEF
 	return lines.join("\n") + "\n";
 }
 
-function collectMeta(node: MindNode, out: Record<string, NodeMeta>): void {
+/** Exported for `goToSection.ts`'s line-number fallback, which needs the exact same frontmatter-line-count this function's caller (`serializeMindMap`) produces, without re-running the whole serialize pass. */
+export function collectMeta(node: MindNode, out: Record<string, NodeMeta>): void {
 	if (nodeHasPersistableMeta(node)) {
 		out[node.id] = {
 			folded: node.folded || undefined,
@@ -46,6 +47,35 @@ function collectMeta(node: MindNode, out: Record<string, NodeMeta>): void {
 		};
 	}
 	for (const child of node.children) collectMeta(child, out);
+}
+
+/**
+ * Serializes a single node and its subtree as a plain nested markdown list
+ * (`- text`, 2-space indent per depth level, the node itself as the top
+ * item) — the OS-clipboard export format for "tree copy" (plan item 06).
+ * Lists (not headings) are the right target here: they paste cleanly into
+ * other Obsidian notes, other apps, and plain-text editors, and round-trip
+ * through our own parser on the way back in. No ` ^blockid` suffixes or
+ * mindmap frontmatter metadata — those are internal identity/persistence
+ * details that must not leak into (or collide once pasted back into)
+ * another document. `attachedContent` (paragraphs) is intentionally
+ * dropped too — it doesn't fit the list-bullet format unambiguously, and
+ * the internal `MindNode[]` clipboard (unaffected by this) stays the
+ * fidelity source for paste-back within the same plugin.
+ */
+export function serializeSubtree(node: MindNode): string {
+	const lines: string[] = [];
+	const walk = (n: MindNode, depth: number) => {
+		lines.push(`${"  ".repeat(depth)}- ${n.text}`);
+		for (const child of n.children) walk(child, depth + 1);
+	};
+	walk(node, 0);
+	return lines.join("\n");
+}
+
+/** Multiple independent subtrees (a multi-selection copy) — each is its own top-level list, joined by blank-line-free newlines so the whole thing parses back as one flat sequence of top-level list items. */
+export function serializeSubtrees(nodes: MindNode[]): string {
+	return nodes.map(serializeSubtree).join("\n");
 }
 
 function serializeNode(node: MindNode, cfg: SerializeConfig, lines: string[]): void {

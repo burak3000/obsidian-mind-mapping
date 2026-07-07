@@ -1,24 +1,26 @@
-import { Notice, TAbstractFile, TFile, TextFileView, WorkspaceLeaf } from "obsidian";
+import { Menu, Notice, TAbstractFile, TFile, TextFileView, WorkspaceLeaf } from "obsidian";
 import { parseMindMap } from "../sync/parser";
-import { serializeMindMap } from "../sync/serializer";
+import { serializeMindMap, serializeSubtree, SerializeConfig } from "../sync/serializer";
 import { computeLayout, DEFAULT_LAYOUT_CONFIG } from "../layout/layoutEngine";
 import { SvgRenderer } from "../render/SvgRenderer";
 import { Controller, ControllerListener } from "../controller/Controller";
 import { InlineEditor } from "./InlineEditor";
 import { debounce } from "../sync/debounce";
 import { findEquivalentNode } from "../sync/reconcile";
-import { findNearestInDirection, Direction } from "../render/navigation";
+import { navigateFrom, Direction } from "../render/navigation";
 import { collectVisibleNodes } from "../model/visibility";
 import { assignMissingColors } from "../render/colors";
 import { assignMissingSides } from "../layout/sides";
 import { ensurePersistentIds } from "../sync/metadata";
-import { LinkKind, buildLinkText, getSoleLink } from "../model/links";
+import { LinkKind, buildLinkText, getImageEmbed, getSoleLink } from "../model/links";
+import { MindNode } from "../model/types";
 import { LinkModal } from "./LinkModal";
 import { SearchPanel } from "./SearchPanel";
 import { searchNodes } from "../model/search";
 import { MindMapSettings } from "../settings/PluginSettings";
 import { LayoutConfig } from "../layout/layoutEngine";
-import { SerializeConfig } from "../sync/serializer";
+import { resolveGoToTarget } from "../sync/goToSection";
+import { parseExternalPaste } from "../sync/parseExternalPaste";
 
 export const VIEW_TYPE_MINDMAP = "mindmap-view";
 
@@ -41,6 +43,8 @@ export class MindMapView extends TextFileView implements ControllerListener {
 	private inlineEditor: InlineEditor | null = null;
 	private searchPanel: SearchPanel | null = null;
 	private lastWrittenText = "";
+	/** The last markdown text *we* wrote to the OS clipboard (tree copy, plan item 06) — paste compares against this to tell "internal copy/cut" apart from "user copied something else outside the plugin". */
+	private lastWrittenClipboardText: string | null = null;
 	private readonly scheduleWrite: ReturnType<typeof debounce>;
 
 	constructor(leaf: WorkspaceLeaf, private readonly settingsProvider: SettingsProvider) {
@@ -96,7 +100,15 @@ export class MindMapView extends TextFileView implements ControllerListener {
 	async onOpen(): Promise<void> {
 		this.contentEl.tabIndex = 0;
 		this.registerDomEvent(this.contentEl, "keydown", (evt) => this.onKeyDown(evt));
-		this.registerDomEvent(this.contentEl, "mousedown", () => this.contentEl.focus());
+		this.registerDomEvent(this.contentEl, "mousedown", (evt) => {
+			// Don't steal focus from the inline editor or search panel — a
+			// click there is the user placing the caret / typing a query, not
+			// a request to refocus the mind map canvas. Blurring the editor
+			// on its own click-to-position-cursor was committing (and
+			// closing) it out from under the user.
+			if ((evt.target as HTMLElement).closest(".mm-inline-editor, .mm-search-panel")) return;
+			this.contentEl.focus();
+		});
 		this.registerEvent(this.app.vault.on("modify", (file) => this.onVaultModify(file)));
 		this.addAction("search", "Search mind map", () => this.toggleSearch());
 	}
@@ -128,12 +140,20 @@ export class MindMapView extends TextFileView implements ControllerListener {
 
 		this.renderer?.destroy();
 		this.renderer = new SvgRenderer(container, this.settingsProvider.settings.animationNodeThreshold, this.layoutConfig);
-		this.renderer.setNodeClickHandler((id) => this.controller?.select(id));
+		this.renderer.setNodeClickHandler((id, evt) => {
+			if (evt.ctrlKey || evt.metaKey) this.controller?.toggleSelection(id);
+			else if (evt.shiftKey) this.controller?.selectRange(id);
+			else this.controller?.select(id);
+		});
 		this.renderer.setNodeDblClickHandler((id) => this.controller?.requestEdit(id));
 		this.renderer.setBadgeClickHandler((id) => this.controller?.toggleFold(id));
+		this.renderer.setBackgroundClickHandler(() => this.controller?.select(null));
+		this.renderer.setNodeContextMenuHandler((id, evt) => this.showNodeMenu(id, evt));
 		this.renderer.setLinkClickHandler((kind, target) => this.openLink(kind, target));
+		this.renderer.setImageClickHandler((kind, target) => this.openImage(kind, target));
+		this.renderer.setImageResolver((node) => this.resolveNodeImageUrl(node));
 		this.renderer.setManualMoveHandler((id, pos) => this.controller?.setManualPosition(id, pos));
-		this.renderer.setReorderHandler((id, targetId) => this.controller?.moveNode(id, targetId));
+		this.renderer.setReorderHandler((id, targetId, position) => this.controller?.moveNode(id, targetId, position));
 		this.renderer.setManualWidthHandler((id, width) => this.controller?.setManualWidth(id, width));
 		this.renderer.mount(model);
 	}
@@ -146,7 +166,7 @@ export class MindMapView extends TextFileView implements ControllerListener {
 		assignMissingSides(this.controller.model.root);
 		computeLayout(this.controller.model.root, this.layoutConfig);
 		this.renderer.update(this.controller.model);
-		this.renderer.selectNode(this.controller.selectedId);
+		this.renderer.setSelection(this.controller.selectedIds, this.controller.selectedId);
 		ensurePersistentIds(this.controller.model.root, this.controller.model.byId);
 		this.data = serializeMindMap(this.controller.model, this.serializeConfig);
 		this.scheduleWrite();
@@ -164,11 +184,15 @@ export class MindMapView extends TextFileView implements ControllerListener {
 		if (!node) return;
 		const rect = this.renderer.getNodeScreenRect(nodeId);
 		if (!rect) return;
+		const { minWidth, maxWidth, fontSize } = this.renderer.getNodeEditMetrics(node);
 
 		this.inlineEditor?.destroy();
 		this.inlineEditor = new InlineEditor(this.contentEl, {
 			initialText: node.text,
 			rect,
+			minWidth,
+			maxWidth,
+			fontSize,
 			onCommit: (text) => {
 				this.inlineEditor = null;
 				this.controller?.commitRename(nodeId, text);
@@ -205,6 +229,24 @@ export class MindMapView extends TextFileView implements ControllerListener {
 		}
 	}
 
+	/** R-image-display, decision A: clicking a node's image thumbnail opens the image — in a new tab, unlike `openLink`, so the mind map stays open (same reasoning as "Go to note section" always opening in a new tab). */
+	private openImage(kind: LinkKind, target: string): void {
+		if (kind === "mdlink" && /^[a-z][a-z0-9+.-]*:\/\//i.test(target)) {
+			window.open(target, "_blank");
+			return;
+		}
+		this.app.workspace.openLinkText(target, this.file?.path ?? "", true);
+	}
+
+	/** R-image-display: resolves a node's image embed target to a displayable URL — remote URLs are used as-is; vault-relative targets go through Obsidian's native attachment resolution (`getFirstLinkpathDest` + `getResourcePath`), same mechanism a normal embedded image in a markdown note uses. Null (embed present but unresolvable, or no embed at all) leaves the renderer's placeholder/missing-glyph showing. */
+	private resolveNodeImageUrl(node: MindNode): string | null {
+		const embed = getImageEmbed(node.text);
+		if (!embed) return null;
+		if (/^[a-z][a-z0-9+.-]*:\/\//i.test(embed.target)) return embed.target;
+		const dest = this.app.metadataCache.getFirstLinkpathDest(embed.target, this.file?.path ?? "");
+		return dest ? this.app.vault.getResourcePath(dest) : null;
+	}
+
 	private openLinkEditor(nodeId: string): void {
 		if (!this.controller) return;
 		const node = this.controller.model.byId.get(nodeId);
@@ -220,12 +262,221 @@ export class MindMapView extends TextFileView implements ControllerListener {
 			onRemove: () => {
 				if (existing) this.controller?.commitRename(nodeId, existing.label);
 			},
+			onClose: () => this.contentEl.focus(),
 		}).open();
 	}
 
 	/** "Rebalance" command (plan §9.3) — exposed for main.ts's Obsidian command to call on the active view. */
 	rebalance(): void {
 		this.controller?.rebalance();
+	}
+
+	// --- Context menu (R-context-menu) ---
+
+	/** Right-click on a node: select it first (menu actions operate on the selection, same as the keyboard shortcuts), then show an Obsidian-native `Menu` with "Go to note section" plus the existing keyboard-shortcut actions. */
+	private showNodeMenu(nodeId: string, evt: MouseEvent): void {
+		if (!this.controller) return;
+		this.controller.select(nodeId);
+		const node = this.controller.model.byId.get(nodeId);
+		if (!node) return;
+
+		const target = resolveGoToTarget(this.controller.model, node, this.serializeConfig);
+		const menu = new Menu();
+		menu
+			.addItem((item) =>
+				item
+					.setTitle("Go to note section")
+					.setIcon("arrow-right-to-line")
+					.setDisabled(target.kind === "unavailable")
+					.onClick(() => this.goToNoteSection(nodeId))
+			)
+			.addSeparator()
+			.addItem((item) => item.setTitle("Edit").setIcon("pencil").onClick(() => this.controller?.requestEdit(nodeId)))
+			.addItem((item) =>
+				item
+					.setTitle("Add child")
+					.setIcon("plus")
+					.onClick(() => this.controller?.addChildToSelected())
+			)
+			.addItem((item) =>
+				item
+					.setTitle("Add sibling")
+					.setIcon("list-plus")
+					.onClick(() => this.controller?.addSiblingToSelected("after"))
+			)
+			.addItem((item) => item.setTitle("Edit link").setIcon("link").onClick(() => this.openLinkEditor(nodeId)))
+			.addItem((item) =>
+				item
+					.setTitle(node.folded ? "Unfold" : "Fold")
+					.setIcon(node.folded ? "chevron-right" : "chevron-down")
+					.onClick(() => this.controller?.toggleFold(nodeId))
+			)
+			.addSeparator()
+			.addItem((item) =>
+				item
+					.setTitle("Copy")
+					.setIcon("copy")
+					.onClick(() => {
+						this.controller?.copySelected();
+						this.writeClipboardText();
+					})
+			)
+			.addItem((item) =>
+				item
+					.setTitle("Cut")
+					.setIcon("scissors")
+					.onClick(() => {
+						this.controller?.cutSelected();
+						this.writeClipboardText();
+					})
+			)
+			.addItem((item) =>
+				item
+					.setTitle("Paste")
+					.setIcon("clipboard-paste")
+					.onClick(() => this.handlePaste())
+			)
+			.addItem((item) =>
+				item
+					.setTitle("Copy subtree as markdown")
+					.setIcon("clipboard-copy")
+					.onClick(() => {
+						// Just this one node's subtree, regardless of any active
+						// multi-selection — doesn't touch the internal clipboard,
+						// so it doesn't disturb a pending Ctrl+C/X paste target.
+						navigator.clipboard?.writeText(serializeSubtree(node)).catch(() => {});
+					})
+			)
+			.addSeparator()
+			.addItem((item) => item.setTitle("Delete").setIcon("trash").onClick(() => this.controller?.deleteSelected()));
+
+		menu.showAtMouseEvent(evt);
+	}
+
+	/** "Go to note section": opens the backing file (new tab, so the map stays open) and jumps to the exact heading/list line the node came from — three-tier target resolution, see `resolveGoToTarget`. */
+	private async goToNoteSection(nodeId: string): Promise<void> {
+		if (!this.controller || !this.file) return;
+		const node = this.controller.model.byId.get(nodeId);
+		if (!node) return;
+		const target = resolveGoToTarget(this.controller.model, node, this.serializeConfig);
+		if (target.kind === "unavailable") return;
+
+		// The map's own edits are debounced up to writeDebounceMs — flush first
+		// so the markdown view (and, for the line-number fallback, the line
+		// count it's opened against) reflects the current content, not
+		// whatever was last actually written to disk.
+		await this.flushPendingWrite();
+
+		if (target.kind === "blockid") {
+			await this.app.workspace.openLinkText(`#^${target.ref}`, this.file.path, true);
+		} else if (target.kind === "heading") {
+			await this.app.workspace.openLinkText(`#${target.ref}`, this.file.path, true);
+		} else {
+			const leaf = this.app.workspace.getLeaf(true);
+			await leaf.openFile(this.file, { eState: { line: target.line } });
+			this.app.workspace.revealLeaf(leaf);
+		}
+	}
+
+	/** Ctrl/Cmd+M toggle (R-ctrl-m): flushes any pending debounced write immediately, so switching to the markdown editor right after an edit doesn't show stale content. No-op if there's nothing pending. */
+	async flushPendingWrite(): Promise<void> {
+		this.scheduleWrite.cancel();
+		if (this.data !== this.lastWrittenText) await this.writeNow();
+	}
+
+	// --- OS clipboard ("tree copy", plan item 06) ---
+	//
+	// All raw `navigator.clipboard` I/O lives here, not in Controller — its
+	// mutation methods (`pasteToSelected`/`pasteSubtrees`) stay fully
+	// synchronous and testable without stubbing the clipboard API. Copy/cut
+	// write the exported markdown after the fact; paste reads the OS
+	// clipboard and decides which of the two paste paths applies before
+	// calling into the (synchronous) Controller.
+
+	/** After copySelected()/cutSelected(): mirrors the just-copied subtree(s) to the OS clipboard as plain markdown, so it can be pasted into any other app. Fire-and-forget — a denied/unavailable clipboard permission shouldn't block the (already-completed) internal copy. */
+	private writeClipboardText(): void {
+		if (!this.controller) return;
+		const text = this.controller.getClipboardMarkdown();
+		if (text === null) return;
+		this.lastWrittenClipboardText = text;
+		navigator.clipboard?.writeText(text)?.catch(() => {
+			/* permission denied or unavailable — internal clipboard still works for paste-within-the-plugin */
+		});
+	}
+
+	/**
+	 * Ctrl/Cmd+V: an image on the OS clipboard (screenshot, copied from a
+	 * browser, etc.) takes priority — saved into the vault's attachment
+	 * folder and inserted as a new child node whose text is its embed
+	 * markdown, since there's no meaningful "paste as text" fallback for
+	 * image bytes. Otherwise, reads clipboard text; if it differs from what
+	 * we last wrote ourselves, the user copied something from *outside*
+	 * this plugin, so parse it (`parseExternalPaste`) and insert that
+	 * instead of the (stale, in this case) internal clipboard.
+	 */
+	private async handlePaste(): Promise<void> {
+		if (!this.controller) return;
+
+		const embedText = await this.pasteClipboardImage();
+		if (embedText !== null) {
+			this.controller.pasteImageAsChild(embedText);
+			return;
+		}
+
+		let osText: string | null = null;
+		try {
+			osText = (await navigator.clipboard?.readText()) ?? null;
+		} catch {
+			osText = null; // permission denied / unavailable — fall through to the internal clipboard
+		}
+		if (osText !== null && osText !== this.lastWrittenClipboardText) {
+			const nodes = parseExternalPaste(osText);
+			if (nodes.length > 0) {
+				this.controller.pasteSubtrees(nodes);
+				return;
+			}
+		}
+		this.controller.pasteToSelected();
+	}
+
+	/** SVG extensions are the one common image type mismatched between MIME subtype (`svg+xml`) and file extension (`svg`) — every other type we handle (`png`, `jpeg`→treated as `jpg`, `gif`, `webp`, `bmp`) already matches. */
+	private static readonly IMAGE_EXT_FOR_MIME: Record<string, string> = { jpeg: "jpg", "svg+xml": "svg" };
+
+	/**
+	 * If the OS clipboard holds image data, writes it into the vault's
+	 * configured attachment location and returns the embed markdown
+	 * (`![[Pasted image ...]]`) to insert as a new node — null if the
+	 * clipboard has no image (falls through to the text-paste path in
+	 * `handlePaste`) or the read/write fails (permission denied, no active
+	 * file, unsupported browser API — same defensive style as
+	 * `writeClipboardText`/`handlePaste`'s own text read).
+	 */
+	private async pasteClipboardImage(): Promise<string | null> {
+		if (!this.file || typeof navigator.clipboard?.read !== "function") return null;
+		let items: ClipboardItems;
+		try {
+			items = await navigator.clipboard.read();
+		} catch {
+			return null;
+		}
+		for (const item of items) {
+			const mime = item.types.find((t) => t.startsWith("image/"));
+			if (!mime) continue;
+			try {
+				const blob = await item.getType(mime);
+				const subtype = mime.slice("image/".length);
+				const ext = MindMapView.IMAGE_EXT_FOR_MIME[subtype] ?? subtype;
+				const stamp = window.moment ? window.moment().format("YYYYMMDDHHmmss") : String(Date.now());
+				const filename = `Pasted image ${stamp}.${ext}`;
+				const path = await this.app.fileManager.getAvailablePathForAttachment(filename, this.file.path);
+				const file = await this.app.vault.createBinary(path, await blob.arrayBuffer());
+				return `![[${this.app.metadataCache.fileToLinktext(file, this.file.path)}]]`;
+			} catch {
+				new Notice("Mind map: couldn't paste the clipboard image.");
+				return null;
+			}
+		}
+		return null;
 	}
 
 	// --- Search ---
@@ -276,6 +527,12 @@ export class MindMapView extends TextFileView implements ControllerListener {
 			return;
 		}
 
+		if (evt.key === "Escape") {
+			evt.preventDefault();
+			this.controller.collapseSelection();
+			return;
+		}
+
 		if (evt.key === "Tab") {
 			evt.preventDefault();
 			this.controller.addChildToSelected();
@@ -297,6 +554,13 @@ export class MindMapView extends TextFileView implements ControllerListener {
 		} else if (mod && evt.key.toLowerCase() === "y") {
 			evt.preventDefault();
 			this.controller.redo();
+		} else if (evt.altKey && (evt.key === "ArrowUp" || evt.key === "ArrowDown")) {
+			// Keyboard equivalent of the drag-reorder before/after gesture:
+			// reorders the selected node among its own siblings rather than
+			// changing the selection (checked ahead of the plain-arrow
+			// navigation branch below, which this would otherwise fall into).
+			evt.preventDefault();
+			this.controller.moveSelectedInSiblingOrder(evt.key === "ArrowUp" ? "up" : "down");
 		} else if (evt.key === "ArrowUp" || evt.key === "ArrowDown" || evt.key === "ArrowLeft" || evt.key === "ArrowRight") {
 			evt.preventDefault();
 			this.navigate(evt.key);
@@ -312,23 +576,30 @@ export class MindMapView extends TextFileView implements ControllerListener {
 		} else if (mod && evt.key.toLowerCase() === "c") {
 			evt.preventDefault();
 			this.controller.copySelected();
+			this.writeClipboardText();
 		} else if (mod && evt.key.toLowerCase() === "x") {
 			evt.preventDefault();
 			this.controller.cutSelected();
+			this.writeClipboardText();
 		} else if (mod && evt.key.toLowerCase() === "v") {
 			evt.preventDefault();
-			this.controller.pasteToSelected();
+			this.handlePaste();
 		}
 	}
 
 	private navigate(key: string): void {
 		if (!this.controller) return;
-		const selectedId = this.controller.selectedId ?? this.controller.model.root.id;
-		const node = this.controller.model.byId.get(selectedId);
+		if (!this.controller.selectedId) {
+			// First arrow press with nothing selected: select the root as
+			// visible feedback instead of silently navigating from it.
+			this.controller.select(this.controller.model.root.id);
+			return;
+		}
+		const node = this.controller.model.byId.get(this.controller.selectedId);
 		if (!node) return;
 		const direction: Direction = key === "ArrowUp" ? "up" : key === "ArrowDown" ? "down" : key === "ArrowLeft" ? "left" : "right";
 		const visible = collectVisibleNodes(this.controller.model.root);
-		const next = findNearestInDirection(visible, node, direction);
+		const next = navigateFrom(node, direction, visible);
 		if (next) this.controller.select(next.id);
 	}
 

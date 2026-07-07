@@ -1,6 +1,7 @@
 import { flextree } from "d3-flextree";
 import { MindNode } from "../model/types";
 import { wrapText, lineLength } from "../model/textWrap";
+import { getImageEmbed } from "../model/links";
 
 export type LayoutMode = "balanced" | "right-only" | "left-only";
 
@@ -18,6 +19,10 @@ export interface LayoutConfig {
 	fontSizeStep: number; // px subtracted per depth level below root
 	minFontSize: number; // px floor so deep nodes stay legible instead of shrinking to nothing
 	baselineFontSize: number; // the font size nodeHeight/charWidth/lineHeight/paddingX/minNodeWidth above were tuned for — used to derive the scale factor at any given depth
+	/** Fixed thumbnail box for an image embed (plan item 07, decision A) — baseline px, depth-scaled like everything else. Fixed size (not aspect-ratio-derived) so layout never depends on an image actually loading. */
+	imageThumbWidth: number;
+	imageThumbHeight: number;
+	imageThumbGap: number; // px between the last text line and the thumbnail
 }
 
 export const DEFAULT_LAYOUT_CONFIG: LayoutConfig = {
@@ -34,10 +39,15 @@ export const DEFAULT_LAYOUT_CONFIG: LayoutConfig = {
 	fontSizeStep: 2.4,
 	minFontSize: 12,
 	baselineFontSize: 12,
+	imageThumbWidth: 120,
+	imageThumbHeight: 90,
+	imageThumbGap: 6,
 };
 
 type FontScaleConfig = Pick<LayoutConfig, "rootFontSize" | "fontSizeStep" | "minFontSize" | "baselineFontSize">;
 type WrapWidthConfig = FontScaleConfig & Pick<LayoutConfig, "charWidth" | "paddingX" | "maxCharsPerLine">;
+/** Exactly what `computeNodeBox` needs — kept as its own type (not the full `LayoutConfig`) so callers like `SvgRenderer` (which never needs `mode`/`siblingGap`/`levelGap`) can depend on the narrower shape. */
+export type NodeBoxConfig = WrapWidthConfig & Pick<LayoutConfig, "nodeHeight" | "lineHeight" | "minNodeWidth" | "imageThumbWidth" | "imageThumbHeight" | "imageThumbGap">;
 
 /** Visual hierarchy by depth (R15): root reads largest, each level down a bit smaller, floored so deep nodes stay legible. */
 export function fontSizeForDepth(depth: number, cfg: FontScaleConfig): number {
@@ -59,6 +69,14 @@ export interface NodeBox {
 	w: number;
 	h: number;
 	lines: ReturnType<typeof wrapText>;
+	/**
+	 * Node-local position/size of the image thumbnail area (plan item 07),
+	 * or null if `text` has no image embed. Kept here (not recomputed
+	 * separately) so layout and render agree on the exact same geometry —
+	 * same reasoning as `wrapCeilingFor` in the renderer needing to match
+	 * this function's own wrap-width math exactly.
+	 */
+	imageBox: { x: number; y: number; w: number; h: number } | null;
 }
 
 /**
@@ -67,8 +85,13 @@ export interface NodeBox {
  * default ceiling, and derives the box size from the wrapped lines: width
  * shrinks to the longest actual line (never wider than the wrap ceiling),
  * height grows by the depth-scaled `lineHeight` per line beyond the first.
+ * If `text` has an image embed (R-image-display), a fixed-size thumbnail
+ * area is appended below the text — fixed size, not derived from the
+ * image's own intrinsic dimensions, so box geometry never depends on
+ * whether/when the image actually finishes loading (decision A: no
+ * layout reflow on image load).
  */
-export function computeNodeBox(text: string, cfg: LayoutConfig, depth: number, manualWidth?: number): NodeBox {
+export function computeNodeBox(text: string, cfg: NodeBoxConfig, depth: number, manualWidth?: number): NodeBox {
 	const scale = scaleForDepth(depth, cfg);
 	const charWidth = cfg.charWidth * scale;
 	const paddingX = cfg.paddingX * scale;
@@ -80,12 +103,22 @@ export function computeNodeBox(text: string, cfg: LayoutConfig, depth: number, m
 	const maxCharsPerLine = Math.max(1, Math.floor((maxWidthPx - paddingX) / charWidth));
 	const lines = wrapText(text, maxCharsPerLine);
 	const longestChars = Math.max(1, ...lines.map(lineLength));
-	const w = Math.min(maxWidthPx, Math.max(minNodeWidth, longestChars * charWidth + paddingX));
-	const h = lines.length <= 1 ? nodeHeight : nodeHeight + (lines.length - 1) * lineHeight;
-	return { w, h, lines };
+	const textW = Math.min(maxWidthPx, Math.max(minNodeWidth, longestChars * charWidth + paddingX));
+	const textH = lines.length <= 1 ? nodeHeight : nodeHeight + (lines.length - 1) * lineHeight;
+
+	const embed = getImageEmbed(text);
+	if (!embed) return { w: textW, h: textH, lines, imageBox: null };
+
+	const thumbW = cfg.imageThumbWidth * scale;
+	const thumbH = cfg.imageThumbHeight * scale;
+	const gap = cfg.imageThumbGap * scale;
+	const w = Math.max(textW, thumbW);
+	const h = textH + gap + thumbH;
+	const imageBox = { x: (w - thumbW) / 2, y: textH + gap, w: thumbW, h: thumbH };
+	return { w, h, lines, imageBox };
 }
 
-export function estimateNodeWidth(text: string, cfg: LayoutConfig, depth: number, manualWidth?: number): number {
+export function estimateNodeWidth(text: string, cfg: NodeBoxConfig, depth: number, manualWidth?: number): number {
 	return computeNodeBox(text, cfg, depth, manualWidth).w;
 }
 
@@ -110,11 +143,20 @@ function nodeBoxFor(node: MindNode, cfg: LayoutConfig): NodeBox {
 	return box;
 }
 
-/** Splits by each branch's already-assigned `branchSide` (sticky — see `assignMissingSides`/DECISIONS.md), preserving document order within each side. */
+/**
+ * Splits by each branch's already-assigned `branchSide` (contiguous
+ * document-order split — see `assignMissingSides`/DECISIONS.md) for the
+ * anticlockwise arrangement: left reads top→bottom, so it keeps document
+ * order (flextree places the first array element topmost); right reads
+ * bottom→top, so its array is reversed before `layoutSide` sees it — the
+ * first (lowest-index, earliest-in-document) right branch ends up last in
+ * the reversed array and therefore bottommost, matching "read the right
+ * side from the bottom up in document order".
+ */
 function partitionChildren(children: MindNode[]): { left: MindNode[]; right: MindNode[] } {
 	return {
 		left: children.filter((c) => c.branchSide === "L"),
-		right: children.filter((c) => c.branchSide !== "L"),
+		right: children.filter((c) => c.branchSide !== "L").reverse(),
 	};
 }
 

@@ -2,10 +2,6 @@
 mindmap:
   nodes:
     ^glwety: { width: 131.12890625 }
-    ^9pkvk2: { folded: true }
-    ^waxko7: { folded: true }
-    ^0zqrcj: { folded: true }
-    ^ym1vyp: { folded: true }
 ---
 # AI Board Presentation
 b3k Obsidian Mind Mapping Tool
@@ -85,7 +81,7 @@ b3k Obsidian Mind Mapping Tool
               - does not work consistently
         - disadvantages
           - since we type and paste texts does not retain as much as physical ones
-## b3k-obsidian plugin  intro ^9pkvk2
+## b3k-obsidian plugin  intro
 - source is available at [code siemens](https://example.com/3272)
 - obsidian
   - dependency
@@ -116,8 +112,8 @@ b3k Obsidian Mind Mapping Tool
           - to handover to Sonnet 5 for impl
     - sonnet 5 iplements the plan
     - testing, feedback and fixes loop
-## why this specific plugin matters ^waxko7
-- uses .md ^0zqrcj
+## why this specific plugin matters
+- uses .md
   - .md format advantages
     - info is stored in a .md file
       - supplied to an AI system later
@@ -132,7 +128,7 @@ b3k Obsidian Mind Mapping Tool
 - resides in my repo in code siemens
   - can be checked later by other people
   - we can asses it against anything required
-## how to properly use it ^ym1vyp
+## how to properly use it
 - one time action
   - setup obsidian
     - install this plugin
@@ -148,4 +144,5 @@ b3k Obsidian Mind Mapping Tool
     - create steps
       - break down high level steps into further sub-steps
     - go until your analysis is finished
-## example usage
+## an example usage
+- my sbom mind map[[SBOM in TIA Release Pipeline]]

@@ -1,5 +1,5 @@
 import { describe, expect, it } from "vitest";
-import { parseTextSegments, getDisplayText, getSoleLink } from "../src/model/links";
+import { parseTextSegments, getDisplayText, getSoleLink, parseEmbeds, getImageEmbed, isImageTarget } from "../src/model/links";
 
 describe("parseTextSegments", () => {
 	it("returns a single plain segment for text with no links", () => {
@@ -53,5 +53,71 @@ describe("getSoleLink", () => {
 
 	it("returns null when there is no link at all", () => {
 		expect(getSoleLink("plain text")).toBeNull();
+	});
+});
+
+describe("parseEmbeds (plan item 07: image display)", () => {
+	it("parses a wikilink embed", () => {
+		expect(parseEmbeds("![[photo.png]]")).toEqual([{ kind: "wikilink", target: "photo.png", alt: "photo.png" }]);
+	});
+
+	it("parses a wikilink embed with an alias as alt text", () => {
+		expect(parseEmbeds("![[photo.png|My photo]]")).toEqual([{ kind: "wikilink", target: "photo.png", alt: "My photo" }]);
+	});
+
+	it("parses a markdown-form embed", () => {
+		expect(parseEmbeds("![alt text](path/to.png)")).toEqual([{ kind: "mdlink", target: "path/to.png", alt: "alt text" }]);
+	});
+
+	it("does not confuse a regular (non-embed) link with an embed", () => {
+		expect(parseEmbeds("[[Some Note]]")).toEqual([]);
+		expect(parseEmbeds("[label](url)")).toEqual([]);
+	});
+
+	it("finds multiple embeds in one string", () => {
+		const embeds = parseEmbeds("![[a.png]] and ![[b.png]]");
+		expect(embeds.map((e) => e.target)).toEqual(["a.png", "b.png"]);
+	});
+});
+
+describe("isImageTarget", () => {
+	it("recognizes common image extensions, case-insensitively", () => {
+		for (const ext of ["png", "PNG", "jpg", "jpeg", "gif", "svg", "webp", "bmp", "avif"]) {
+			expect(isImageTarget(`photo.${ext}`)).toBe(true);
+		}
+	});
+
+	it("ignores a query string/fragment when checking the extension", () => {
+		expect(isImageTarget("https://example.com/photo.png?w=200")).toBe(true);
+		expect(isImageTarget("photo.png#fragment")).toBe(true);
+	});
+
+	it("rejects non-image targets", () => {
+		expect(isImageTarget("note.pdf")).toBe(false);
+		expect(isImageTarget("Some Note")).toBe(false);
+	});
+});
+
+describe("getImageEmbed (plan item 07: image display)", () => {
+	it("returns the embed when the target is an image", () => {
+		expect(getImageEmbed("![[photo.png]]")).toEqual({ kind: "wikilink", target: "photo.png", alt: "photo.png" });
+	});
+
+	it("returns the embed even alongside surrounding caption text (unlike getSoleLink, doesn't require the whole text to be just the embed)", () => {
+		expect(getImageEmbed("Photo: ![[photo.png]]")).toEqual({ kind: "wikilink", target: "photo.png", alt: "photo.png" });
+	});
+
+	it("returns null when the embed's target isn't an image (e.g. a PDF)", () => {
+		expect(getImageEmbed("![[note.pdf]]")).toBeNull();
+	});
+
+	it("returns null when there's no embed at all", () => {
+		expect(getImageEmbed("plain text")).toBeNull();
+		expect(getImageEmbed("[[Some Note]]")).toBeNull(); // a regular link, not an embed
+	});
+
+	it("returns the first image embed when there are several", () => {
+		const embed = getImageEmbed("![[a.png]] ![[b.png]]");
+		expect(embed?.target).toBe("a.png");
 	});
 });

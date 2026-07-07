@@ -10,6 +10,7 @@
 		"fixtures": "node scripts/generate-fixtures.mjs",
 		"bench:m1": "node scripts/bench-m1.mjs",
 		"bench:m2": "node scripts/bench-m2.mjs",
+		"bench:images": "node scripts/bench-images.mjs",
 		"test": "vitest run",
 		"test:watch": "vitest"
 	},

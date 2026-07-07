@@ -8,6 +8,11 @@ export interface ScreenRect {
 export interface InlineEditorOptions {
 	initialText: string;
 	rect: ScreenRect;
+	/** Screen-px width floor/ceiling for the grow-with-content behavior below. Omit to keep the old fixed-`rect.width` sizing (used by tests that don't exercise this path). */
+	minWidth?: number;
+	maxWidth?: number;
+	/** Screen-px font size (depth-scaled, at the view's current zoom) so the editor's text metrics agree with the node it's editing. Omit to keep the CSS default. */
+	fontSize?: number;
 	onCommit: (text: string) => void;
 	onCancel: () => void;
 	onCommitAndCreateChild: (text: string) => void;
@@ -31,6 +36,9 @@ export interface InlineEditorOptions {
  */
 export class InlineEditor {
 	private readonly input: HTMLTextAreaElement;
+	private readonly measureEl: HTMLSpanElement;
+	private readonly minWidth: number;
+	private readonly maxWidth: number;
 	private committed = false;
 
 	constructor(host: HTMLElement, opts: InlineEditorOptions) {
@@ -41,18 +49,43 @@ export class InlineEditor {
 		input.style.position = "absolute";
 		input.style.left = `${opts.rect.left}px`;
 		input.style.top = `${opts.rect.top}px`;
-		input.style.width = `${opts.rect.width}px`;
 		input.style.height = `${opts.rect.height}px`;
+		if (opts.fontSize) input.style.fontSize = `${opts.fontSize}px`;
 		host.appendChild(input);
+		this.input = input;
+
+		// minWidth/maxWidth both default to rect.width when omitted, which
+		// collapses resizeWidth() to the old fixed-width behavior — used by
+		// tests that only exercise keyboard interactions.
+		this.minWidth = opts.minWidth ?? opts.rect.width;
+		this.maxWidth = opts.maxWidth ?? opts.rect.width;
+
+		// Hidden mirror element, same font as the textarea, used only to
+		// measure the longest line's rendered width so the overlay can grow
+		// to fit content up to the node's own wrap ceiling — instead of
+		// soft-wrapping at the box's pre-edit width (~40px/minNodeWidth for a
+		// freshly created, still-empty node), which put nearly every typed
+		// character on its own line.
+		const measure = document.createElement("span");
+		measure.style.position = "absolute";
+		measure.style.visibility = "hidden";
+		measure.style.whiteSpace = "pre";
+		measure.style.left = "-9999px";
+		measure.style.top = "0";
+		measure.style.font = getComputedStyle(input).font;
+		host.appendChild(measure);
+		this.measureEl = measure;
+
+		this.resizeWidth();
 		input.focus();
 		input.select();
-		this.input = input;
 
 		const finish = (action: () => void) => {
 			if (this.committed) return;
 			this.committed = true;
 			action();
 			input.remove();
+			this.measureEl.remove();
 		};
 
 		// Grows the overlay to fit content that wraps past the node's
@@ -61,6 +94,7 @@ export class InlineEditor {
 		// within the "no full work per keystroke" rule same as everything
 		// else in this class.
 		input.addEventListener("input", () => {
+			this.resizeWidth();
 			input.style.height = "auto";
 			input.style.height = `${input.scrollHeight}px`;
 		});
@@ -89,9 +123,21 @@ export class InlineEditor {
 		input.addEventListener("blur", () => finish(() => opts.onCommit(input.value)));
 	}
 
+	/** Grows the overlay's width to fit the longest line, clamped to [minWidth, maxWidth]. */
+	private resizeWidth(): void {
+		const lines = this.input.value.split("\n");
+		let longest = "";
+		for (const line of lines) if (line.length > longest.length) longest = line;
+		this.measureEl.textContent = longest.length ? longest : " ";
+		const contentWidth = this.measureEl.scrollWidth + 16; // padding/border/caret allowance, see CSS .mm-inline-editor
+		const width = Math.min(this.maxWidth, Math.max(this.minWidth, contentWidth));
+		this.input.style.width = `${width}px`;
+	}
+
 	destroy(): void {
 		if (this.committed) return;
 		this.committed = true;
 		this.input.remove();
+		this.measureEl.remove();
 	}
 }

@@ -62,3 +62,49 @@ export function buildLinkText(result: { label: string; kind: LinkKind; target: s
 	}
 	return `[${result.label}](${result.target})`;
 }
+
+export interface EmbedInfo {
+	kind: LinkKind;
+	target: string;
+	alt: string;
+}
+
+// ![[target]] or ![[target|alt]], and ![alt](target) — embed syntax (plan
+// item 07: image display). The leading `!` is what distinguishes an embed
+// from an ordinary link of the same shape.
+const EMBED_RE = /!\[\[([^\]]+)\]\]|!\[([^\]]*)\]\(([^)]+)\)/g;
+
+/** Every embed in `text`, regardless of target type (image or otherwise) — callers that only care about images should filter with `isImageTarget`/use `getImageEmbed`. */
+export function parseEmbeds(text: string): EmbedInfo[] {
+	const out: EmbedInfo[] = [];
+	EMBED_RE.lastIndex = 0;
+	let match: RegExpExecArray | null;
+	while ((match = EMBED_RE.exec(text))) {
+		if (match[1] !== undefined) {
+			const [target, alias] = match[1].split("|");
+			out.push({ kind: "wikilink", target, alt: alias ?? target });
+		} else {
+			out.push({ kind: "mdlink", target: match[3], alt: match[2] ?? "" });
+		}
+	}
+	return out;
+}
+
+const IMAGE_EXT_RE = /\.(png|jpe?g|gif|svg|webp|bmp|avif)$/i;
+
+/** Whether `target` (a vault path or URL, possibly with a query string/fragment) points at a common image file type. */
+export function isImageTarget(target: string): boolean {
+	return IMAGE_EXT_RE.test(target.split(/[?#]/)[0]);
+}
+
+/**
+ * The image embed to render for a node (plan item 07), if its text has
+ * one — the *first* image-target embed, not requiring it to occupy the
+ * whole text (unlike `getSoleLink`): a caption alongside an embed
+ * (`Photo: ![[img.png]]`) is common and shouldn't disqualify it. Null if
+ * there's no embed, or its target isn't an image (e.g. `![[note.pdf]]`).
+ */
+export function getImageEmbed(text: string): EmbedInfo | null {
+	if (!text.includes("![")) return null; // fast path — avoids the regex for the vast majority of node text, same reasoning as getDisplayText
+	return parseEmbeds(text).find((e) => isImageTarget(e.target)) ?? null;
+}

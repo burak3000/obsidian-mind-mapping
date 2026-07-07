@@ -68,6 +68,7 @@ export function parseMindMap(source: string, fallbackTitle: string): MindMapMode
 	const root = createNode(fallbackTitle, null, 0);
 	const stack: StackFrame[] = [{ node: root, kind: "root", level: -1 }];
 	let firstHeadingSeen = false;
+	let hasExplicitRootHeading = false;
 	let pendingContent: string[] = [];
 
 	const flushPendingContent = (target: MindNode) => {
@@ -90,6 +91,7 @@ export function parseMindMap(source: string, fallbackTitle: string): MindMapMode
 			if (!firstHeadingSeen && level === 1) {
 				// First H1 in the file becomes the root itself, not a child.
 				firstHeadingSeen = true;
+				hasExplicitRootHeading = true;
 				flushPendingContent(root);
 				root.text = stripBlockId(text).text;
 				continue;
@@ -146,7 +148,7 @@ export function parseMindMap(source: string, fallbackTitle: string): MindMapMode
 	indexById(root, byId);
 	applyMindmapDataToTree(byId, extractMindmapData(frontmatterRaw));
 
-	return { root, byId, version: 1, frontmatterRaw };
+	return { root, byId, version: 1, frontmatterRaw, hasExplicitRootHeading };
 }
 
 function computeSubtreeCounts(node: MindNode): number {

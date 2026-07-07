@@ -2,7 +2,7 @@ import { describe, expect, it } from "vitest";
 import { readFileSync, readdirSync } from "fs";
 import { join } from "path";
 import { parseMindMap } from "../src/sync/parser";
-import { serializeMindMap } from "../src/sync/serializer";
+import { serializeMindMap, serializeSubtree, serializeSubtrees } from "../src/sync/serializer";
 
 const FIXTURES_DIR = join(__dirname, "..", "fixtures");
 
@@ -44,6 +44,56 @@ describe("serializeMindMap", () => {
 			expect(serializeMindMap(model)).toBe(md);
 		});
 	}
+});
+
+describe("serializeSubtree (plan item 06: tree copy to OS clipboard)", () => {
+	it("emits the node and its subtree as a nested markdown list, the node itself as the top item", () => {
+		const md = ["# Root", "## Branch A", "- a", "  - a1", "- b"].join("\n");
+		const model = parseMindMap(md, "fallback");
+		const branchA = model.root.children[0];
+
+		expect(serializeSubtree(branchA)).toBe(["- Branch A", "  - a", "    - a1", "  - b"].join("\n"));
+	});
+
+	it("strips ^blockid suffixes and mindmap metadata — persisted ids/positions must not leak into the exported text", () => {
+		const md = ["# Root", "## Branch A", "- a"].join("\n");
+		const model = parseMindMap(md, "fallback");
+		const branchA = model.root.children[0];
+		branchA.folded = true; // would normally earn a ^blockid suffix on serializeMindMap
+		branchA.manualPos = { x: 10, y: 20 };
+
+		const text = serializeSubtree(branchA);
+		expect(text).not.toContain("^");
+		expect(text).not.toContain("pos:");
+		expect(text).toBe(["- Branch A", "  - a"].join("\n"));
+	});
+
+	it("round-trips through parseMindMap: re-parsing the exported text reproduces the same structure/text", () => {
+		const md = ["# Root", "## Branch A", "- a", "  - a1", "- b"].join("\n");
+		const model = parseMindMap(md, "fallback");
+		const branchA = model.root.children[0];
+
+		// serializeSubtree emits a plain list (no H1), so re-parsing puts
+		// "Branch A" itself as a top-level list item under a synthetic root,
+		// same as parseExternalPaste's list case (see parseExternalPaste.test.ts).
+		const reparsed = parseMindMap(serializeSubtree(branchA), "fallback");
+		expect(reparsed.root.children.map((c) => c.text)).toEqual(["Branch A"]);
+		const reparsedBranchA = reparsed.root.children[0];
+		expect(reparsedBranchA.children.map((c) => c.text)).toEqual(["a", "b"]);
+		expect(reparsedBranchA.children[0].children.map((c) => c.text)).toEqual(["a1"]);
+	});
+
+	it("serializeSubtrees joins multiple independent top-level subtrees so they re-parse as siblings", () => {
+		const md = ["# Root", "## Branch A", "- a", "## Branch B", "- b"].join("\n");
+		const model = parseMindMap(md, "fallback");
+		const [branchA, branchB] = model.root.children;
+
+		const text = serializeSubtrees([branchA, branchB]);
+		const reparsed = parseMindMap(text, "fallback");
+		expect(reparsed.root.children.map((c) => c.text)).toEqual(["Branch A", "Branch B"]);
+		expect(reparsed.root.children[0].children.map((c) => c.text)).toEqual(["a"]);
+		expect(reparsed.root.children[1].children.map((c) => c.text)).toEqual(["b"]);
+	});
 });
 
 // Sanity check that the fixtures directory is what we think it is, so the

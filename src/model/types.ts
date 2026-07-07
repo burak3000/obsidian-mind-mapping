@@ -1,3 +1,6 @@
+/** Where a plain drag-drop lands relative to its drop target: nested as its last child, or reordered as a sibling immediately before/after it (same-level reorder). */
+export type DropPosition = "before" | "after" | "inside";
+
 export interface NodeLayout {
 	x: number;
 	y: number;
@@ -39,4 +42,6 @@ export interface MindMapModel {
 	version: number;
 	/** YAML frontmatter block (including `---` delimiters), preserved verbatim if present. */
 	frontmatterRaw: string | null;
+	/** True only if the source file's very first heading was an actual `# H1` line that became the root — false when the root is a synthetic stand-in (`fallbackTitle`) because the file had no H1 (yet). Used to disable "Go to note section" for the root in that case (there's no real heading line to jump to). */
+	hasExplicitRootHeading: boolean;
 }

@@ -10,6 +10,20 @@ function fireKey(input: HTMLTextAreaElement, key: string, opts: Partial<Keyboard
 	return evt;
 }
 
+/** jsdom never computes real layout, so `scrollWidth` is always 0 — stub it to a fixed px-per-character so the width-growth logic (which only reads `scrollWidth`) is exercised meaningfully. Returns a restore function. */
+function stubScrollWidth(pxPerChar: number): () => void {
+	const original = Object.getOwnPropertyDescriptor(HTMLElement.prototype, "scrollWidth");
+	Object.defineProperty(HTMLElement.prototype, "scrollWidth", {
+		configurable: true,
+		get(this: HTMLElement) {
+			return (this.textContent?.length ?? 0) * pxPerChar;
+		},
+	});
+	return () => {
+		if (original) Object.defineProperty(HTMLElement.prototype, "scrollWidth", original);
+	};
+}
+
 describe("InlineEditor", () => {
 	it("pre-fills and focuses a textarea with the initial text", () => {
 		const host = document.createElement("div");
@@ -129,6 +143,56 @@ describe("InlineEditor", () => {
 		input.dispatchEvent(new FocusEvent("blur"));
 		expect(onCommit).toHaveBeenCalledTimes(1);
 		document.body.removeChild(host);
+	});
+
+	it("grows width with content between minWidth/maxWidth, floors at minWidth, and clamps at maxWidth", () => {
+		const restore = stubScrollWidth(10); // simulate ~10px/char since jsdom can't measure real text
+		try {
+			const host = document.createElement("div");
+			new InlineEditor(host, {
+				initialText: "",
+				rect: RECT,
+				minWidth: 30,
+				maxWidth: 120,
+				onCommit: () => {},
+				onCancel: () => {},
+				onCommitAndCreateChild: () => {},
+			});
+			const input = host.querySelector("textarea") as HTMLTextAreaElement;
+			expect(input.style.width).toBe("30px"); // empty text floors at minWidth, not a near-zero box
+
+			input.value = "abc"; // 3 * 10 + 16 = 46, within bounds
+			input.dispatchEvent(new Event("input"));
+			expect(input.style.width).toBe("46px");
+
+			input.value = "twelve chars"; // 12 * 10 + 16 = 136, clamps at maxWidth
+			input.dispatchEvent(new Event("input"));
+			expect(input.style.width).toBe("120px");
+		} finally {
+			restore();
+		}
+	});
+
+	it("without minWidth/maxWidth options, keeps the old fixed rect.width sizing regardless of content", () => {
+		const restore = stubScrollWidth(10);
+		try {
+			const host = document.createElement("div");
+			new InlineEditor(host, {
+				initialText: "",
+				rect: RECT,
+				onCommit: () => {},
+				onCancel: () => {},
+				onCommitAndCreateChild: () => {},
+			});
+			const input = host.querySelector("textarea") as HTMLTextAreaElement;
+			expect(input.style.width).toBe(`${RECT.width}px`);
+
+			input.value = "a much longer sentence than before";
+			input.dispatchEvent(new Event("input"));
+			expect(input.style.width).toBe(`${RECT.width}px`);
+		} finally {
+			restore();
+		}
 	});
 
 	it("destroy() removes the textarea without firing any callback", () => {

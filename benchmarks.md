@@ -283,3 +283,84 @@ mobile budgets are 2x desktop with the same "no freeze" requirement;
 nothing here contradicts that, but nothing confirms it either. See
 `SUBMISSION-CHECKLIST.md` for what's needed before treating mobile as
 actually supported.
+
+## 2026-07-06 — Anticlockwise document-order branch sides (plan item 03)
+
+`assignMissingSides` changed from per-node weight-greedy to a contiguous
+document-order split (recomputed only on explicit Rebalance — see
+DECISIONS.md), and `partitionChildren` now reverses the right-side array
+for the anticlockwise reading direction. Both changes are still O(first-
+level branches) — no new O(N) or O(visible) work — so re-ran `npm run
+bench:m2` (Tab/rename/delete/fold/unfold, which already exercises
+`assignMissingSides` on every mutation) to confirm no regression:
+
+| Fixture | Tab | Rename | Delete | Fold | Unfold | Serialize |
+|---|---|---|---|---|---|---|
+| 100 nodes | 4.1–4.3 ms | 2.6–3.1 ms | 2.3–2.6 ms | 2.1–2.6 ms | 5.6–6.2 ms | 0.3 ms |
+| 500 nodes | 4.0–4.2 ms | 3.4–3.8 ms | 3.4–3.8 ms | 4.2 ms | 4.6–4.7 ms | 0.2 ms |
+| 2,000 nodes | 9.4–9.9 ms | 10.6–11.0 ms | 12.2 ms | 8.4–8.9 ms | 11.4–11.7 ms | 0.4 ms |
+| 5,000 nodes (stress) | 27.9–28.5 ms | 26.6 ms | 22.1–22.4 ms | 16.6 ms (one run: 53.0 ms, machine-load jitter — repeat run back to 16.6 ms, no consistent regression) | 24.0–31.3 ms | 0.6–0.8 ms |
+
+Indistinguishable from the pre-change numbers logged above (Tab/rename/
+delete 22–25ms, fold/unfold 15–24ms at 5,000 nodes) — the contiguous-split
+and array-reverse work doesn't show up against the existing per-mutation
+cost. All within budget except the single fold outlier noted above, which
+did not reproduce.
+
+## 2026-07-06 — Multiple selection (plan item 05)
+
+The new Controller-level selection logic (`normalizedSelection`'s
+`compareDocumentOrder` sort, `bulkDelete`'s compound delete/restore) and
+`SvgRenderer.setSelection`'s symmetric-diff restyle are all O(Δselection)/
+O(affected subtrees) — they don't touch the relayout (`computeLayout`) or
+full-update (`SvgRenderer.update`) hot path that `bench-m2` measures, and
+for a single-node selection (the common case, and the only case the
+existing bench script's Tab/rename/delete/fold/unfold operations exercise)
+they collapse to exactly the same work as before. Re-ran `npm run
+bench:m2` anyway as a smoke check on the shared relayout/render pipeline:
+
+| Fixture | Tab | Rename | Delete | Fold | Unfold |
+|---|---|---|---|---|---|
+| 100 nodes | 4.3 ms | 3.3 ms | 2.7 ms | 2.6 ms | 6.1 ms |
+| 500 nodes | 4.3 ms | 4.1 ms | 3.6 ms | 4.1 ms | 5.0 ms |
+| 2,000 nodes | 10.3 ms | 10.9 ms | 11.9 ms | 8.5 ms | 11.4 ms |
+| 5,000 nodes (stress) | 26.8 ms | 27.6 ms | 22.4 ms | 16.5 ms | 24.2 ms |
+
+Indistinguishable from the baseline above — no regression. No dedicated
+multi-selection-specific benchmark was written: selections are expected to
+stay small (a handful of nodes at most for a bulk copy/cut/paste), so the
+O(depth)-per-comparison document-order sort and O(affected) bulk delete
+are negligible next to the relayout that already follows every mutation.
+
+## 2026-07-06 — Image display (plan item 07, decision A: fixed-size thumb, lazy load via culling)
+
+New `scripts/bench-images.mjs` (`npm run bench:images`): a 201-node map
+(root + 200 first-level branches, every one carrying an image embed) —
+the worst case the perf section calls out ("hundreds of images all
+in-viewport at low zoom"). Measures parse+layout, `SvgRenderer.mount`
+(which includes creating and resolving every image element, since 201
+nodes is below the 300-node culling threshold so nothing is lazy here —
+this is intentionally the *unlazy* worst case), and a pan-dispatch
+proxy (drag the viewport; jsdom doesn't paint, so this is JS/DOM-API time
+only, not a real frame time — same caveat already logged for M2):
+
+```
+201 nodes (200 with an image embed): parse+layout=3.5–4.2ms mount=40.9–43.2ms
+open=47.9–49.9ms (budget 1000ms) [OK] pan-dispatch=2.9–3.0ms
+.mm-node-image elements created: 200
+```
+
+Comfortably inside the 2,000-node open budget (1s) despite every single
+node needing an image element created and its `href` resolved — this is
+the case lazy-loading is specifically meant to *avoid* paying for at
+larger scale (above the 300-node culling threshold, only in/near-viewport
+nodes get this cost at all, via the existing `applyVisibleSet`/`recull`
+mechanism — no new benchmark needed for that path specifically, since
+`culling.test.ts` already has a dedicated correctness test confirming the
+image resolver is never called for a culled-out node).
+**What remains unverified:** decode/paint cost for real image files (this
+bench uses a `setImageResolver` stub that never actually fetches
+anything) and real frame rate during a pan with images actually loaded —
+neither is measurable in jsdom; per CLAUDE.md, the authoritative check is
+a real Obsidian window with an image-heavy vault, watching Chrome
+DevTools' Performance panel during pan/zoom. Not done in this environment.

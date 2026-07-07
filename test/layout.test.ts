@@ -60,6 +60,57 @@ describe("computeNodeBox (long-text wrapping)", () => {
 	});
 });
 
+describe("computeNodeBox with image embeds (plan item 07, decision A: fixed-size thumb)", () => {
+	it("has no imageBox for text without an embed", () => {
+		const box = computeNodeBox("plain text", DEFAULT_LAYOUT_CONFIG, 1);
+		expect(box.imageBox).toBeNull();
+	});
+
+	it("has no imageBox for a non-image embed", () => {
+		const box = computeNodeBox("![[note.pdf]]", DEFAULT_LAYOUT_CONFIG, 1);
+		expect(box.imageBox).toBeNull();
+	});
+
+	it("grows the box height by the depth-scaled thumb height + gap when text has an image embed", () => {
+		const depth = 1;
+		const scale = scaleForDepth(depth, DEFAULT_LAYOUT_CONFIG);
+		const withoutEmbed = computeNodeBox("caption", DEFAULT_LAYOUT_CONFIG, depth);
+		const withEmbed = computeNodeBox("caption ![[photo.png]]", DEFAULT_LAYOUT_CONFIG, depth);
+
+		const expectedThumbH = DEFAULT_LAYOUT_CONFIG.imageThumbHeight * scale;
+		const expectedGap = DEFAULT_LAYOUT_CONFIG.imageThumbGap * scale;
+		expect(withEmbed.h).toBeCloseTo(withoutEmbed.h + expectedGap + expectedThumbH);
+	});
+
+	it("widens the box to fit the thumb when the text alone would be narrower", () => {
+		const depth = 2;
+		const scale = scaleForDepth(depth, DEFAULT_LAYOUT_CONFIG);
+		const box = computeNodeBox("hi ![[photo.png]]", DEFAULT_LAYOUT_CONFIG, depth);
+		expect(box.w).toBeGreaterThanOrEqual(DEFAULT_LAYOUT_CONFIG.imageThumbWidth * scale);
+	});
+
+	it("never lets the thumb make the box narrower than the text alone required", () => {
+		const depth = 0;
+		const longText = Array.from({ length: 20 }, (_, i) => `word${i}`).join(" ") + " ![[photo.png]]";
+		const box = computeNodeBox(longText, DEFAULT_LAYOUT_CONFIG, depth);
+		const textOnly = computeNodeBox(
+			Array.from({ length: 20 }, (_, i) => `word${i}`).join(" "),
+			DEFAULT_LAYOUT_CONFIG,
+			depth
+		);
+		expect(box.w).toBeGreaterThanOrEqual(textOnly.w);
+	});
+
+	it("box geometry never depends on the image's own dimensions (decision A: fixed thumb, no layout-on-load)", () => {
+		// Same config/depth/text -> identical imageBox every time, regardless
+		// of what the actual image file looks like (computeNodeBox has no way
+		// to know that, and shouldn't need to).
+		const a = computeNodeBox("![[photo.png]]", DEFAULT_LAYOUT_CONFIG, 1);
+		const b = computeNodeBox("![[photo.png]]", DEFAULT_LAYOUT_CONFIG, 1);
+		expect(a.imageBox).toEqual(b.imageBox);
+	});
+});
+
 describe("computeLayout with wrapped nodes", () => {
 	it("gives a wrapped (multi-line) node a taller layout box than a single-line sibling", () => {
 		const longText = Array.from({ length: 20 }, (_, i) => `word${i}`).join(" ");
@@ -235,5 +286,25 @@ describe("computeLayout (balanced, the default)", () => {
 		computeLayout(model.root);
 		expect(model.root.layout!.x).toBe(0);
 		expect(model.root.layout!.y).toBe(0);
+	});
+
+	it("anticlockwise reading order (R-anticlockwise-order, decision (c)): left side top->bottom in document order, right side bottom->top in document order", () => {
+		// Four equal-weight branches split evenly: A, B -> left; C, D -> right.
+		const md = ["# Root", "## A", "## B", "## C", "## D"].join("\n");
+		const model = parseMindMap(md, "fallback");
+		assignMissingSides(model.root);
+		computeLayout(model.root);
+		const [a, b, c, d] = model.root.children;
+		expect(a.layout!.side).toBe("L");
+		expect(b.layout!.side).toBe("L");
+		expect(c.layout!.side).toBe("R");
+		expect(d.layout!.side).toBe("R");
+
+		// Left reads top->bottom in document order: A (earlier) sits above B.
+		expect(a.layout!.y).toBeLessThan(b.layout!.y);
+		// Right reads bottom->top in document order: C (earlier) sits below D,
+		// so reading from the bottom of the right side upward encounters C
+		// before D, matching their order in the document.
+		expect(c.layout!.y).toBeGreaterThan(d.layout!.y);
 	});
 });

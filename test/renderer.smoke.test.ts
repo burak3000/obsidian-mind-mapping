@@ -4,7 +4,7 @@
 // This is NOT visual verification — jsdom doesn't paint or lay out pixels,
 // so colors/sizes/positions on screen must still be checked manually in
 // the dev vault (see CLAUDE.md).
-import { describe, expect, it } from "vitest";
+import { afterEach, describe, expect, it } from "vitest";
 import { parseMindMap } from "../src/sync/parser";
 import { computeLayout, DEFAULT_LAYOUT_CONFIG, fontSizeForDepth, scaleForDepth } from "../src/layout/layoutEngine";
 import { SvgRenderer } from "../src/render/SvgRenderer";
@@ -110,6 +110,90 @@ describe("SvgRenderer", () => {
 		expect(linkSpans.length).toBeGreaterThan(0);
 		linkSpans[0].dispatchEvent(new MouseEvent("click", { bubbles: true }));
 		expect(linkClicked).toEqual(["wikilink", "Some Note"]);
+
+		renderer.destroy();
+	});
+
+	it("image embed (plan item 07): creates a placeholder + image element only for a node with an image embed, and sets href from the resolver", () => {
+		const md = ["# Root", "## Branch A ![[photo.png]]", "## Branch B"].join("\n");
+		const model = parseMindMap(md, "fallback");
+		computeLayout(model.root, { ...DEFAULT_LAYOUT_CONFIG, mode: "right-only" });
+		const [a, b] = model.root.children;
+
+		const container = document.createElement("div");
+		const renderer = new SvgRenderer(container);
+		renderer.setImageResolver(() => "resource://photo.png");
+		renderer.mount(model);
+
+		const aImage = container.querySelector(`[data-node-id="${a.id}"] .mm-node-image`);
+		expect(aImage).not.toBeNull();
+		expect(aImage?.getAttribute("href")).toBe("resource://photo.png");
+		expect(container.querySelector(`[data-node-id="${a.id}"] .mm-image-placeholder`)).not.toBeNull();
+
+		// No embed on Branch B -> no image DOM at all, not just an unset href.
+		expect(container.querySelector(`[data-node-id="${b.id}"] .mm-node-image`)).toBeNull();
+
+		renderer.destroy();
+	});
+
+	it("image embed: no resolver (or a resolver returning null) leaves href unset — placeholder/missing-glyph still shows via CSS", () => {
+		const md = ["# Root", "## Branch A ![[photo.png]]"].join("\n");
+		const model = parseMindMap(md, "fallback");
+		computeLayout(model.root, { ...DEFAULT_LAYOUT_CONFIG, mode: "right-only" });
+		const a = model.root.children[0];
+
+		const container = document.createElement("div");
+		const renderer = new SvgRenderer(container);
+		renderer.mount(model); // no setImageResolver call at all
+
+		const image = container.querySelector(`[data-node-id="${a.id}"] .mm-node-image`);
+		expect(image).not.toBeNull();
+		expect(image?.hasAttribute("href")).toBe(false);
+
+		renderer.destroy();
+	});
+
+	it("image embed: clicking the thumbnail fires the image click handler (not the node click handler), with the embed's kind/target", () => {
+		const md = ["# Root", "## Branch A ![[photo.png]]"].join("\n");
+		const model = parseMindMap(md, "fallback");
+		computeLayout(model.root, { ...DEFAULT_LAYOUT_CONFIG, mode: "right-only" });
+		const a = model.root.children[0];
+
+		const container = document.createElement("div");
+		const renderer = new SvgRenderer(container);
+		renderer.setImageResolver(() => "resource://photo.png");
+		let imageClicked: [string, string] | null = null;
+		let nodeClicked = false;
+		renderer.setImageClickHandler((kind, target) => (imageClicked = [kind, target]));
+		renderer.setNodeClickHandler(() => (nodeClicked = true));
+		renderer.mount(model);
+
+		const image = container.querySelector(`[data-node-id="${a.id}"] .mm-node-image`)!;
+		image.dispatchEvent(new MouseEvent("click", { bubbles: true }));
+
+		expect(imageClicked).toEqual(["wikilink", "photo.png"]);
+		expect(nodeClicked).toBe(false);
+
+		renderer.destroy();
+	});
+
+	it("image embed: removing the embed from a node's text removes its image DOM on the next update", () => {
+		const md = ["# Root", "## Branch A ![[photo.png]]"].join("\n");
+		const model = parseMindMap(md, "fallback");
+		computeLayout(model.root, { ...DEFAULT_LAYOUT_CONFIG, mode: "right-only" });
+		const a = model.root.children[0];
+
+		const container = document.createElement("div");
+		const renderer = new SvgRenderer(container);
+		renderer.setImageResolver(() => "resource://photo.png");
+		renderer.mount(model);
+		expect(container.querySelector(`[data-node-id="${a.id}"] .mm-node-image`)).not.toBeNull();
+
+		a.text = "Branch A"; // embed removed
+		computeLayout(model.root, { ...DEFAULT_LAYOUT_CONFIG, mode: "right-only" });
+		renderer.update(model);
+
+		expect(container.querySelector(`[data-node-id="${a.id}"] .mm-node-image`)).toBeNull();
 
 		renderer.destroy();
 	});
@@ -256,6 +340,36 @@ describe("SvgRenderer", () => {
 
 		renderer.selectNode(null);
 		expect(container.querySelector(`[data-node-id="${branchId}"]`)?.classList.contains("mm-selected")).toBe(false);
+
+		renderer.destroy();
+	});
+
+	it("setSelection (R-multi-select) restyles only the symmetric difference between the old and new selection", () => {
+		const md = ["# Root", "## A", "## B", "## C"].join("\n");
+		const model = parseMindMap(md, "fallback");
+		computeLayout(model.root);
+
+		const container = document.createElement("div");
+		const renderer = new SvgRenderer(container);
+		renderer.mount(model);
+		const [a, b, c] = model.root.children;
+		const classesOf = (id: string) => Array.from(container.querySelector(`[data-node-id="${id}"]`)?.classList ?? []);
+
+		renderer.setSelection(new Set([a.id, b.id]), b.id);
+		expect(classesOf(a.id)).toContain("mm-selected");
+		expect(classesOf(a.id)).not.toContain("mm-selected-primary");
+		expect(classesOf(b.id)).toContain("mm-selected");
+		expect(classesOf(b.id)).toContain("mm-selected-primary");
+		expect(classesOf(c.id)).not.toContain("mm-selected");
+
+		// A now moving out, C now moving in, B staying selected but losing
+		// primary to C — only the three affected nodes' classes should change.
+		renderer.setSelection(new Set([b.id, c.id]), c.id);
+		expect(classesOf(a.id)).not.toContain("mm-selected");
+		expect(classesOf(b.id)).toContain("mm-selected");
+		expect(classesOf(b.id)).not.toContain("mm-selected-primary");
+		expect(classesOf(c.id)).toContain("mm-selected");
+		expect(classesOf(c.id)).toContain("mm-selected-primary");
 
 		renderer.destroy();
 	});
@@ -639,6 +753,232 @@ describe("SvgRenderer", () => {
 		expect(reordered).toBe(false);
 
 		renderer.destroy();
+	});
+
+	describe("background click (deselect)", () => {
+		it("clicking empty canvas fires the background-click handler", () => {
+			const model = parseMindMap(["# Root", "## Branch A"].join("\n"), "fallback");
+			computeLayout(model.root);
+
+			const container = document.createElement("div");
+			const renderer = new SvgRenderer(container);
+			let backgroundClicked = false;
+			renderer.setBackgroundClickHandler(() => (backgroundClicked = true));
+			renderer.mount(model);
+
+			const svg = container.querySelector(".mm-svg")!;
+			svg.dispatchEvent(new MouseEvent("click", { bubbles: true }));
+
+			expect(backgroundClicked).toBe(true);
+			renderer.destroy();
+		});
+
+		it("clicking a node does not fire the background-click handler", () => {
+			const model = parseMindMap(["# Root", "## Branch A"].join("\n"), "fallback");
+			computeLayout(model.root);
+			const branch = model.root.children[0];
+
+			const container = document.createElement("div");
+			const renderer = new SvgRenderer(container);
+			let backgroundClicked = false;
+			renderer.setBackgroundClickHandler(() => (backgroundClicked = true));
+			renderer.mount(model);
+
+			const nodeG = container.querySelector(`[data-node-id="${branch.id}"]`)!;
+			nodeG.dispatchEvent(new MouseEvent("click", { bubbles: true }));
+
+			expect(backgroundClicked).toBe(false);
+			renderer.destroy();
+		});
+
+		it("does not fire the background-click handler for the click that follows a real pan drag", () => {
+			// The native `click` event still fires after a pointerdown/up pair on
+			// empty canvas even when the pointer moved a lot in between (a pan
+			// gesture, not a click) — without suppression this would clear the
+			// selection on every single pan, which is not what a canvas-drag
+			// gesture means.
+			const model = parseMindMap(["# Root", "## Branch A"].join("\n"), "fallback");
+			computeLayout(model.root);
+
+			const container = document.createElement("div");
+			const renderer = new SvgRenderer(container);
+			let backgroundClicked = false;
+			renderer.setBackgroundClickHandler(() => (backgroundClicked = true));
+			renderer.mount(model);
+
+			const svg = container.querySelector(".mm-svg")!;
+			svg.dispatchEvent(new PointerEvent("pointerdown", { bubbles: true, clientX: 100, clientY: 100, pointerId: 1 }));
+			svg.dispatchEvent(new PointerEvent("pointermove", { bubbles: true, clientX: 250, clientY: 250, pointerId: 1 }));
+			svg.dispatchEvent(new PointerEvent("pointerup", { bubbles: true, clientX: 250, clientY: 250, pointerId: 1 }));
+			svg.dispatchEvent(new MouseEvent("click", { bubbles: true }));
+
+			expect(backgroundClicked).toBe(false);
+
+			// The suppression is one-shot: a genuine follow-up click (no pan in
+			// between) must still fire normally.
+			svg.dispatchEvent(new MouseEvent("click", { bubbles: true }));
+			expect(backgroundClicked).toBe(true);
+
+			renderer.destroy();
+		});
+
+		it("a small pointer movement below the pan threshold still counts as a click, not a suppressed pan", () => {
+			const model = parseMindMap(["# Root", "## Branch A"].join("\n"), "fallback");
+			computeLayout(model.root);
+
+			const container = document.createElement("div");
+			const renderer = new SvgRenderer(container);
+			let backgroundClicked = false;
+			renderer.setBackgroundClickHandler(() => (backgroundClicked = true));
+			renderer.mount(model);
+
+			const svg = container.querySelector(".mm-svg")!;
+			svg.dispatchEvent(new PointerEvent("pointerdown", { bubbles: true, clientX: 100, clientY: 100, pointerId: 1 }));
+			svg.dispatchEvent(new PointerEvent("pointerup", { bubbles: true, clientX: 101, clientY: 100, pointerId: 1 }));
+			svg.dispatchEvent(new MouseEvent("click", { bubbles: true }));
+
+			expect(backgroundClicked).toBe(true);
+			renderer.destroy();
+		});
+	});
+
+	describe("same-level drag-reorder (before/after vs. nest-inside)", () => {
+		/**
+		 * jsdom doesn't lay elements out, so `elementsFromPoint`/
+		 * `getBoundingClientRect` normally report nothing useful (see the
+		 * "no hit-testable target" test above) — these tests stub both,
+		 * scoped to one target node, to drive the renderer's hit-testing and
+		 * top/bottom-quarter-vs-middle math the same way a real drag would.
+		 */
+		function mockDropTarget(container: HTMLElement, targetId: string, box: { top: number; height: number }): void {
+			const nodeG = container.querySelector(`[data-node-id="${targetId}"]`) as SVGGElement;
+			const rectEl = container.querySelector(`[data-node-id="${targetId}"] .mm-node-rect`) as SVGRectElement;
+			rectEl.getBoundingClientRect = () =>
+				({ left: 0, right: 100, width: 100, top: box.top, bottom: box.top + box.height, height: box.height, x: 0, y: box.top, toJSON() {} }) as DOMRect;
+			(document as unknown as { elementsFromPoint: (x: number, y: number) => Element[] }).elementsFromPoint = () => [nodeG];
+		}
+
+		afterEach(() => {
+			delete (document as Partial<Document>).elementsFromPoint;
+		});
+
+		it("dropping in a sibling's top quarter reorders before it, not nested inside", () => {
+			const model = parseMindMap(["# Root", "## Branch A", "## Branch B"].join("\n"), "fallback");
+			computeLayout(model.root);
+			const [branchA, branchB] = model.root.children;
+
+			const container = document.createElement("div");
+			const renderer = new SvgRenderer(container);
+			const calls: Array<[string, string, string]> = [];
+			renderer.setReorderHandler((id, targetId, position) => calls.push([id, targetId, position]));
+			renderer.mount(model);
+			mockDropTarget(container, branchB.id, { top: 100, height: 40 });
+
+			const nodeG = container.querySelector(`[data-node-id="${branchA.id}"]`)!;
+			const svg = container.querySelector(".mm-svg")!;
+			nodeG.dispatchEvent(new PointerEvent("pointerdown", { bubbles: true, clientX: 50, clientY: 50, pointerId: 1 }));
+			svg.dispatchEvent(new PointerEvent("pointermove", { bubbles: true, clientX: 50, clientY: 105, pointerId: 1 }));
+			svg.dispatchEvent(new PointerEvent("pointerup", { bubbles: true, clientX: 50, clientY: 105, pointerId: 1 }));
+
+			expect(calls).toEqual([[branchA.id, branchB.id, "before"]]);
+			renderer.destroy();
+		});
+
+		it("dropping in a sibling's bottom quarter reorders after it", () => {
+			const model = parseMindMap(["# Root", "## Branch A", "## Branch B"].join("\n"), "fallback");
+			computeLayout(model.root);
+			const [branchA, branchB] = model.root.children;
+
+			const container = document.createElement("div");
+			const renderer = new SvgRenderer(container);
+			const calls: Array<[string, string, string]> = [];
+			renderer.setReorderHandler((id, targetId, position) => calls.push([id, targetId, position]));
+			renderer.mount(model);
+			mockDropTarget(container, branchB.id, { top: 100, height: 40 });
+
+			const nodeG = container.querySelector(`[data-node-id="${branchA.id}"]`)!;
+			const svg = container.querySelector(".mm-svg")!;
+			nodeG.dispatchEvent(new PointerEvent("pointerdown", { bubbles: true, clientX: 50, clientY: 50, pointerId: 1 }));
+			svg.dispatchEvent(new PointerEvent("pointermove", { bubbles: true, clientX: 50, clientY: 135, pointerId: 1 }));
+			svg.dispatchEvent(new PointerEvent("pointerup", { bubbles: true, clientX: 50, clientY: 135, pointerId: 1 }));
+
+			expect(calls).toEqual([[branchA.id, branchB.id, "after"]]);
+			renderer.destroy();
+		});
+
+		it("dropping in a sibling's middle half still nests as its child (original drag-onto behavior, unchanged)", () => {
+			const model = parseMindMap(["# Root", "## Branch A", "## Branch B"].join("\n"), "fallback");
+			computeLayout(model.root);
+			const [branchA, branchB] = model.root.children;
+
+			const container = document.createElement("div");
+			const renderer = new SvgRenderer(container);
+			const calls: Array<[string, string, string]> = [];
+			renderer.setReorderHandler((id, targetId, position) => calls.push([id, targetId, position]));
+			renderer.mount(model);
+			mockDropTarget(container, branchB.id, { top: 100, height: 40 });
+
+			const nodeG = container.querySelector(`[data-node-id="${branchA.id}"]`)!;
+			const svg = container.querySelector(".mm-svg")!;
+			nodeG.dispatchEvent(new PointerEvent("pointerdown", { bubbles: true, clientX: 50, clientY: 50, pointerId: 1 }));
+			svg.dispatchEvent(new PointerEvent("pointermove", { bubbles: true, clientX: 50, clientY: 120, pointerId: 1 }));
+			svg.dispatchEvent(new PointerEvent("pointerup", { bubbles: true, clientX: 50, clientY: 120, pointerId: 1 }));
+
+			expect(calls).toEqual([[branchA.id, branchB.id, "inside"]]);
+			renderer.destroy();
+		});
+
+		it("shows the insertion-line indicator while hovering a before/after zone, and hides it (and the drop-target highlight) once the drag ends", () => {
+			const model = parseMindMap(["# Root", "## Branch A", "## Branch B"].join("\n"), "fallback");
+			computeLayout(model.root);
+			const [branchA, branchB] = model.root.children;
+
+			const container = document.createElement("div");
+			const renderer = new SvgRenderer(container);
+			renderer.setReorderHandler(() => {});
+			renderer.mount(model);
+			mockDropTarget(container, branchB.id, { top: 100, height: 40 });
+
+			const nodeG = container.querySelector(`[data-node-id="${branchA.id}"]`)!;
+			const svg = container.querySelector(".mm-svg")!;
+			const indicator = container.querySelector(".mm-drop-indicator") as SVGLineElement;
+			expect(indicator.style.display).toBe("none");
+
+			nodeG.dispatchEvent(new PointerEvent("pointerdown", { bubbles: true, clientX: 50, clientY: 50, pointerId: 1 }));
+			svg.dispatchEvent(new PointerEvent("pointermove", { bubbles: true, clientX: 50, clientY: 105, pointerId: 1 }));
+			expect(indicator.style.display).not.toBe("none");
+			expect(indicator.getAttribute("y1")).toBe(indicator.getAttribute("y2"));
+			const branchBNode = container.querySelector(`[data-node-id="${branchB.id}"]`)!;
+			expect(branchBNode.classList.contains("mm-drop-target")).toBe(false); // "before" is a sibling reorder, not a nest — must not show the nest highlight
+
+			svg.dispatchEvent(new PointerEvent("pointerup", { bubbles: true, clientX: 50, clientY: 105, pointerId: 1 }));
+			expect(indicator.style.display).toBe("none");
+			expect(branchBNode.classList.contains("mm-drop-target")).toBe(false);
+
+			renderer.destroy();
+		});
+
+		it("falls back to nest-inside when the drop target is the root, regardless of vertical position", () => {
+			const model = parseMindMap(["# Root", "## Branch A"].join("\n"), "fallback");
+			computeLayout(model.root);
+			const branchA = model.root.children[0];
+
+			const container = document.createElement("div");
+			const renderer = new SvgRenderer(container);
+			const calls: Array<[string, string, string]> = [];
+			renderer.setReorderHandler((id, targetId, position) => calls.push([id, targetId, position]));
+			renderer.mount(model);
+			mockDropTarget(container, model.root.id, { top: 100, height: 40 });
+
+			const nodeG = container.querySelector(`[data-node-id="${branchA.id}"]`)!;
+			const svg = container.querySelector(".mm-svg")!;
+			nodeG.dispatchEvent(new PointerEvent("pointerdown", { bubbles: true, clientX: 50, clientY: 50, pointerId: 1 }));
+			svg.dispatchEvent(new PointerEvent("pointermove", { bubbles: true, clientX: 50, clientY: 105, pointerId: 1 }));
+			svg.dispatchEvent(new PointerEvent("pointerup", { bubbles: true, clientX: 50, clientY: 105, pointerId: 1 }));
+
+			expect(calls).toEqual([[branchA.id, model.root.id, "inside"]]);
+			renderer.destroy();
+		});
 	});
 
 	it("getNodeScreenRect is relative to the container, not the viewport (regression: inline editor landed in the wrong place when the container wasn't at the page origin)", () => {

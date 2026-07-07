@@ -106,6 +106,44 @@ describe("viewport culling", () => {
 		expect(container.querySelector(`[data-node-id="${deepest.id}"]`)).not.toBeNull();
 		renderer.destroy();
 	});
+
+	it("image embed lazy-load (plan item 07) rides along with culling: the resolver isn't called for a culled-out node, and is called once it scrolls into view", async () => {
+		const md = makeChain(400).replace("Node 400", "Node 400 ![[photo.png]]");
+		const model = parseMindMap(md, "fallback");
+		computeLayout(model.root, WIDE_CFG);
+
+		const container = document.createElement("div");
+		Object.defineProperty(container, "clientWidth", { value: 800, configurable: true });
+		Object.defineProperty(container, "clientHeight", { value: 600, configurable: true });
+		const renderer = new SvgRenderer(container);
+		const resolvedIds: string[] = [];
+		renderer.setImageResolver((node) => {
+			resolvedIds.push(node.id);
+			return "resource://photo.png";
+		});
+		renderer.mount(model);
+		await nextFrame();
+
+		const deepest = (() => {
+			let n = model.root;
+			while (n.children.length) n = n.children[0];
+			return n;
+		})();
+		expect(container.querySelector(`[data-node-id="${deepest.id}"]`)).toBeNull(); // culled out
+		expect(resolvedIds).not.toContain(deepest.id); // never resolved while off-screen
+
+		const deepestX = deepest.layout!.x;
+		const svg = container.querySelector(".mm-svg")!;
+		svg.dispatchEvent(new PointerEvent("pointerdown", { bubbles: true, clientX: 0, clientY: 0, pointerId: 1 }));
+		svg.dispatchEvent(new PointerEvent("pointermove", { bubbles: true, clientX: -deepestX, clientY: 0, pointerId: 1 }));
+		svg.dispatchEvent(new PointerEvent("pointerup", { bubbles: true, clientX: -deepestX, clientY: 0, pointerId: 1 }));
+		await nextFrame();
+
+		expect(container.querySelector(`[data-node-id="${deepest.id}"] .mm-node-image`)).not.toBeNull();
+		expect(resolvedIds).toContain(deepest.id); // resolved now that it's visible
+
+		renderer.destroy();
+	});
 });
 
 function nextFrame(): Promise<void> {

@@ -14,6 +14,8 @@ export interface LinkModalOptions {
 	hasExistingLink: boolean;
 	onSave: (result: LinkModalResult) => void;
 	onRemove: () => void;
+	/** Fired on every close path (save, remove, or dismiss/Escape) so the caller can restore focus to the mind map. */
+	onClose?: () => void;
 }
 
 /** Ctrl/Cmd+K (R5): add/edit/remove a link on the selected node. */
@@ -78,5 +80,6 @@ export class LinkModal extends Modal {
 
 	onClose(): void {
 		this.contentEl.empty();
+		this.opts.onClose?.();
 	}
 }

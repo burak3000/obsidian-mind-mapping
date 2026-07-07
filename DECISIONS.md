@@ -1,5 +1,376 @@
 # Architectural Decision Records
 
+## 2026-07-07 — Fix: Rebalance hotkey moved to a real Obsidian command (Ctrl/Cmd+Shift+B)
+
+**Choice:** the Rebalance shortcut is now registered via `addCommand({hotkeys: [...]})`
+in [main.ts](../src/main.ts) as **Ctrl/Cmd+Shift+B**, not the raw
+`MindMapView.onKeyDown` listener described in the 2026-07-03 entry below.
+**Why:** that in-view Ctrl/Cmd+B handler never actually fired — Obsidian's
+own global hotkey manager resolves its default "Toggle bold" binding for
+plain Ctrl/Cmd+B via a capture-phase listener before the event ever bubbles
+to a view-level `keydown` listener, so the "avoid a double-fire/precedence
+conflict" reasoning in the earlier entry was backwards: registering through
+`addCommand` is what actually reaches the view, not what conflicts with it.
+Shifted to Ctrl/Cmd+**Shift**+B (rather than keeping plain Ctrl/Cmd+B on
+`addCommand`, which Obsidian's `checkCallback` context-disambiguation would
+have made work too) specifically so Settings → Hotkeys doesn't show it as a
+conflicting binding against Obsidian's own default at all, per the user's
+request not to shadow an existing Obsidian shortcut.
+**Regression test:** none added — `MindMapView` isn't unit-testable against
+real Obsidian hotkey resolution; verified manually in the dev vault.
+
+## 2026-07-06 — Feature: image display in nodes
+
+**Choice:** nodes whose text contains an image embed (`![[photo.png]]` or
+`![alt](path/to.png)`) render a fixed-size thumbnail below the text.
+- **Detection (pure, testable):** `parseEmbeds`/`isImageTarget`/
+  `getImageEmbed` in [links.ts](../src/model/links.ts) — an embed is any
+  `![[target]]`/`![alt](target)`, and `getImageEmbed` returns the first one
+  whose target has an image extension (doesn't require the embed to be the
+  *whole* node text, unlike `getSoleLink` — a caption alongside an image is
+  common). `getImageEmbed`'s own fast path (skip the regex unless the text
+  contains `![`) mirrors `getDisplayText`'s existing one for the same
+  per-layout-pass-multiple-calls reason.
+- **Layout:** `computeNodeBox` ([layoutEngine.ts](../src/layout/layoutEngine.ts))
+  now returns an `imageBox` (node-local x/y/w/h) alongside `w`/`h` when
+  `getImageEmbed` finds one — a **fixed** depth-scaled thumb size
+  (`imageThumbWidth`/`imageThumbHeight`/`imageThumbGap`, new `LayoutConfig`
+  fields, decision A's chosen policy), not derived from the image's own
+  intrinsic dimensions. This is the crux of decision A: layout can commit
+  to a box size before the image has even started loading, so there's
+  never a reflow when a load completes. `computeNodeBox`'s parameter type
+  narrowed from the full `LayoutConfig` to a new `NodeBoxConfig` (exactly
+  the fields it actually uses) so `SvgRenderer` — which re-derives the same
+  `imageBox` at render time via the same function, same reasoning as
+  `wrapCeilingFor` needing to match the layout pass's wrap math exactly —
+  doesn't have to widen its own narrower `TextMetricsConfig` to the full
+  `LayoutConfig` just to call it.
+- **Rendering:** `SvgRenderer` creates a placeholder rect + `<image>` +
+  "missing" glyph group lazily, only for a node whose box has an
+  `imageBox`, inside the same text/size/side-changed gate `renderNodeText`
+  already uses (recomputing `computeNodeBox` there is real work — a wrap
+  pass — so it's not done on every `upsertNode` call the way the cheap
+  `upsertBadge` is). `href` is resolved via a new `setImageResolver`
+  callback (view-supplied, since resolving needs `app.metadataCache`/
+  `app.vault`) — CSS toggles the placeholder/image/missing-glyph via
+  `load`/`error` listeners setting `.mm-image-loaded`/`.mm-image-error` on
+  the group, not JS-driven style writes.
+- **Lazy loading is free, not new machinery:** decision A's "only in/near-
+  viewport nodes get a `href`" requirement rides entirely on the *existing*
+  viewport-culling mechanism (`applyVisibleSet`) — above the 300-node
+  culling threshold, an off-screen node's whole DOM (image included)
+  doesn't exist until `upsertNode` creates it on scrolling into view, so
+  no separate lazy-load bookkeeping was needed at all.
+- **Click behavior:** a new `setImageClickHandler` (separate from
+  `setLinkClickHandler`, even though the embed's kind/target shape is
+  identical to a link's) — clicking a thumbnail opens the image in a
+  **new tab** (`openLinkText(..., true)`), unlike a regular link click
+  (current tab) — decision A's "click opens the image in an Obsidian
+  modal/tab" needs the map to stay open, same reasoning as "Go to note
+  section" always opening in a new tab.
+- Editing: no change — the inline editor already shows the raw text
+  as-is; the image is purely a render-time affordance.
+**User decision (perf rule 3 — thumbnail policy):** **A** — small fixed
+thumb (~120px), click opens the image, chosen over (B) aspect-ratio-sized
+inline images (would need to read intrinsic size on load → one-time
+reflow per image, more memory) and (C) icon-only marker (cheapest but
+least visual value).
+**Cost:** confirmed via new `npm run bench:images` (201-node map, every
+node with an image embed — the worst case at that node count): parse+
+layout ~4ms, mount ~41-43ms (creates and resolves all 200 image elements —
+this is the *unlazy* case since 201 nodes is below the culling threshold),
+well inside the 1s/2,000-node open budget; see `benchmarks.md`. Real
+decode/paint cost and pan fps with actually-loaded images are unverifiable
+in jsdom — flagged there as needing a real Obsidian window check.
+**Source:** `plans/07-feature-image-display.md`.
+
+## 2026-07-06 — Feature: tree copy to the OS clipboard
+
+**Choice:** copying/cutting now also mirrors the subtree(s) to the OS
+clipboard as plain markdown, and pasting can tell an internal copy/cut
+apart from something copied outside the plugin.
+- **Copy side:** new `serializeSubtree`/`serializeSubtrees`
+  ([serializer.ts](../src/sync/serializer.ts)) emit a node's subtree (or
+  several independent ones) as a plain nested markdown list (`- text`,
+  2-space indent per level) — no ` ^blockid` suffixes or mindmap
+  frontmatter metadata, which are internal identity/persistence details
+  that must not leak into (or collide once pasted back into) another
+  document. `Controller.getClipboardMarkdown()` exposes this for whatever
+  is currently on the internal `MindNode[]` clipboard (the item-05
+  change); `MindMapView` calls it right after `copySelected`/`cutSelected`
+  and writes the result via `navigator.clipboard.writeText` (fire-and-
+  forget — a denied/unavailable permission shouldn't block the
+  already-completed internal copy).
+- **Paste side:** `MindMapView` reads the OS clipboard
+  (`navigator.clipboard.readText()`) and compares it against the text it
+  last wrote itself (`lastWrittenClipboardText`, view-local state). If it
+  differs, the user copied something from *outside* the plugin, so it's
+  parsed via the new `parseExternalPaste`
+  ([parseExternalPaste.ts](../src/sync/parseExternalPaste.ts)) — reusing
+  the existing heading/list parser rather than a separate one, so anything
+  that already round-trips through this plugin (including our own
+  `serializeSubtree` output) parses back identically. Three cases: a
+  document starting with a real H1 becomes one subtree (headings nest);
+  list/heading structure without a leading H1 becomes N top-level
+  subtrees; plain text with no markers at all becomes one leaf node per
+  non-blank line. Every returned node gets a fresh id top to bottom (never
+  reuses the source text's ids — mirrors `cloneSubtree`'s reasoning).
+  `Controller.pasteSubtrees(nodes)` inserts them the same way
+  `pasteToSelected` does (one undo step, shares a new private
+  `bulkInsert` helper with it).
+- **Design call — where the raw `navigator.clipboard` I/O lives:** entirely
+  in `MindMapView`, not `Controller`. `Controller`'s mutation methods
+  (`pasteToSelected`/`pasteSubtrees`) stay fully synchronous and testable
+  without stubbing the clipboard API — the subplan's own stated
+  preference ("View reads the clipboard and hands text in — prefer the
+  latter to keep Controller synchronous and testable"). This needed no
+  Controller constructor changes (no injected clipboard adapter), so every
+  existing `new Controller(model)` test call site kept working unchanged.
+- Context menu (plan item 04) gained "Copy subtree as markdown" (always
+  the right-clicked node specifically, regardless of any active multi-
+  selection, and doesn't touch the internal clipboard — so it doesn't
+  disturb a pending Ctrl+C/X paste target).
+**Alternatives:** write both an OS-clipboard adapter and keep Controller's
+paste async — rejected per the subplan's explicit guidance above; the
+sync-Controller/async-View split is simpler and keeps the existing test
+suite's `new Controller(model)` call sites untouched.
+**Cost:** serialization/parsing is O(subtree) once per user-paced copy/
+paste — irrelevant to the frame/keystroke budgets. Clipboard I/O is async
+and entirely off the render path. No new dependency (`navigator.clipboard`
+is a standard Electron/browser API already available, not a package).
+**Source:** `plans/06-feature-tree-copy-os-clipboard.md`.
+
+## 2026-07-06 — Feature: multiple selection (bulk copy/cut/paste/delete)
+
+**Choice:** `Controller` gains `selectedIds: Set<string>` alongside the
+existing `selectedId` (now specifically the *primary*/anchor — keyboard
+nav target, inline-editor target, Shift+click range anchor). A private
+`setPrimarySelection(id)` keeps every existing single-target flow (Tab,
+Enter, delete, cut, reveal-and-select, etc.) maintaining the invariant
+`selectedIds` is always exactly `{selectedId}` (or empty) outside an active
+multi-selection. Three new public methods add the multi-select surface:
+`toggleSelection` (Ctrl/Cmd+click — membership toggle, primary follows the
+last node toggled on), `selectRange` (Shift+click — contiguous sibling run
+between the anchor and the target; cross-branch falls back to a plain
+single selection since the subplan explicitly scoped Shift+click to
+siblings only), and `collapseSelection` (Esc). Bulk operations go through
+a new private `normalizedSelection()` (drops any selected node whose
+ancestor is also selected — prevents double-clone/double-delete — sorted
+into document order via a new `compareDocumentOrder` comparator that walks
+each node's ancestor path to a shared parent, O(depth) per comparison,
+*not* an O(whole-tree) traversal to build a global order index) and a
+private `bulkDelete()` (one `stack.execute` per op — do: delete each node;
+undo: restore each in reverse deletion order, same reasoning as a single
+delete generalized to N nodes — so cut/delete of any selection size is one
+undo step, and `emitChange()` fires exactly once regardless of selection
+size). `Controller.clipboard` changes from `MindNode | null` to
+`MindNode[] | null` (document-ordered clones) — single-selection is just
+the length-1 case of the same path; this is the exact change
+`MASTER-PLAN.md`'s dependency notes anticipated for plan item 06 (tree
+copy) to build on. `SvgRenderer` mirrors this with `setSelection(ids,
+primaryId)` (symmetric-diff restyle against the previous set — O(Δ), same
+target as `selectNode`'s existing O(1) single-selection case, not
+O(visible)); `selectNode(id)` becomes a thin single-selection wrapper
+around it so the existing test and call site keep working unchanged.
+Multi-selected nodes get the existing `.mm-selected` look; the primary
+additionally gets `.mm-selected-primary` (thicker outline) so it stays
+visually distinct. `MindMapView`'s node-click handler now reads
+`evt.ctrlKey/metaKey`/`evt.shiftKey` to route to `toggleSelection`/
+`selectRange`/plain `select`.
+**Rubber-band (drag-rectangle) selection:** deferred, per the subplan's own
+proposal — adds pointer-mode complexity alongside the existing pan/drag/
+resize gestures, and Ctrl+click/Shift+click already cover the bulk-edit use
+case the source note asked for. Not a performance-vs-feature trade-off (no
+budget is at risk either way), so this was a scope call, not something
+requiring a rule-3 stop.
+**Cost:** selection changes are O(Δselection); bulk ops are O(affected
+subtrees) plus one relayout/render, same order as a single-node op today —
+confirmed via `bench-m2` (no regression on the shared relayout/render
+path), see `benchmarks.md`.
+**Source:** `plans/05-feature-multiple-selection.md`.
+
+## 2026-07-06 — Feature: node context menu + "Go to note section"
+
+**Choice:** `SvgRenderer` gets a `contextmenu` listener (`onContextMenu`,
+same `evt.target.closest(".mm-node")` hit-test pattern as `onPointerDown`
+— right-click doesn't participate in the drag pointer-capture flow that
+forced `onClick`'s more roundabout `elementsFromPoint` resolution, so the
+simple version is enough) exposed via `setNodeContextMenuHandler`.
+`MindMapView.showNodeMenu` builds an Obsidian-native `Menu` (selects the
+node first, so menu actions and the existing keyboard shortcuts share the
+same "operates on the selection" semantics) with "Go to note section" plus
+the standard actions (Edit/Add child/Add sibling/Edit link/Fold/Copy/Cut/
+Paste/Delete) — all thin wrappers around existing `Controller` calls.
+"Go to note section" (`goToNoteSection`) resolves a jump target in three
+tiers via the new `resolveGoToTarget`/`findNodeLine`
+([goToSection.ts](../src/sync/goToSection.ts)):
+1. **Block id** — if the node currently has persistable metadata (fold/
+   manual position/width — exactly the condition under which
+   `serializeMindMap` writes a ` ^blockid` suffix), use Obsidian's native
+   block reference (`openLinkText("#^" + id, ...)`).
+2. **Heading text** — if the node is a heading (depth <= `headingDepth`)
+   with text that's unique among headings in the file, a heading-text link
+   (`openLinkText("#" + text, ...)`), same resolution Obsidian uses for
+   `[[note#Heading]]`.
+3. **Line number fallback** — otherwise (list nodes without a persisted
+   id, or duplicate heading text): `findNodeLine` mirrors
+   `serializeMindMap`'s exact line-emission order structurally (tree
+   position, not text search — so duplicate text elsewhere can't confuse
+   it) to compute the 0-based line, then `leaf.openFile(file, { eState: {
+   line } })`.
+Always opens in a **new tab** (`openLinkText(..., true)` / `getLeaf(true)`)
+so the mind map stays open, and flushes the pending debounced write
+first (reusing `flushPendingWrite()` from the Ctrl+M toggle entry above)
+so the destination shows current, not stale, content.
+`MindMapModel` gained a `hasExplicitRootHeading` boolean (set in
+`parser.ts`, true only when the file's first heading was a real `# H1`
+that became the root) so "Go to note section" can be disabled for a
+synthetic root — there's no real H1 line to jump to yet in that case.
+**Alternatives:** always use the line-number fallback — rejected: block-id/
+heading-text links survive the user reordering/editing other parts of the
+file (Obsidian's own link resolution keeps working), where a raw line
+number would silently point at the wrong content after any edit above it.
+**Cost:** menu building and target resolution are on-demand, user-paced
+(one right-click), not per-frame/per-keystroke work; `findNodeLine` is
+O(nodes before the target) once per invocation, only when the cheaper
+tiers miss. No new dependency (`Menu` is already part of the `obsidian`
+package).
+**Source:** `plans/04-feature-node-context-menu.md`.
+
+## 2026-07-06 — Feature: Ctrl/Cmd+M toggles markdown <-> mind map on the same leaf
+
+**Choice:** new `toggle-mindmap-view` command (default hotkey `Mod+M`) in
+`main.ts`. From a `MarkdownView` on a `.md` file, switches that *same*
+leaf to `VIEW_TYPE_MINDMAP` via `leaf.setViewState`. From a `MindMapView`,
+flushes the pending debounced write (`MindMapView.flushPendingWrite()`,
+a new public wrapper that cancels the debounce timer and calls the
+existing `writeNow()` only if there's actually unwritten data) before
+switching the leaf back to `"markdown"` — otherwise the markdown editor
+could open on stale (pre-last-edit) content, since the write-back is
+debounced by up to `writeDebounceMs`. Same-leaf switching (not
+`getLeaf("tab")`, which the pre-existing `open-as-mindmap` command still
+uses for the file-menu entry) means repeated toggling doesn't pile up
+duplicate tabs, and Obsidian's navigation history still records the
+view-state change, so back/forward keeps working.
+**Alternatives:** always open a new tab (existing `open-as-mindmap`
+behavior) — rejected by the source note itself, which asks for a mode
+*toggle*, not a new view each time.
+**Cost:** toggling adds one `writeNow()` flush (already within the <50ms
+write-back budget) on top of the existing view-open cost, which already
+meets its own budget. No new dependency.
+**Source:** `plans/08-feature-ctrl-m-toggle.md`.
+
+## 2026-07-06 — Anticlockwise document-order branch sides (supersedes part of "sticky left/right sides")
+
+**Choice:** left/right side assignment changed from per-node weight-greedy
+(interleaved, no relationship to document order) to a **contiguous
+document-order split**: branches `1..K` (document order) go Left, `K+1..N`
+go Right, where K is chosen to minimize the weight difference between the
+two groups. `sides.ts`'s `assignMissingSides` now has two paths: if *no*
+branch has a side yet (first open, or right after Rebalance clears them
+all), it computes a fresh contiguous split from scratch
+(`assignInitialSplit`); if *some* branches already have sides (the normal
+edit-time case — one new first-level branch just appeared), each side-less
+branch inherits the side of its nearest already-assigned neighbor in
+document order, which extends the existing contiguous run instead of
+picking whichever side is currently lighter (the old policy) — weight-
+greedy could place a newly-appended branch on the "wrong" side purely by
+weight, breaking the document-order contiguity this whole change exists to
+guarantee. `layoutEngine.ts`'s `partitionChildren` reverses the right-side
+array before `layoutSide` sees it, so the right side reads bottom→top in
+document order while the left side keeps reading top→bottom, per the
+user's chosen geometry ((c): left top→bottom, then right bottom→top,
+i.e. strict anticlockwise starting top-left).
+**User decisions (perf rule 3 — see `plans/03-ux-anticlockwise-node-order.md`):**
+D1 (when the split may move): **A** — only ever recomputed on an explicit
+Rebalance (already-existing `rebalance-mindmap` command / `Controller.
+rebalance()`), never as a side effect of an ordinary edit, *plus* a new
+Ctrl/Cmd+B in-view shortcut added to `MindMapView.onKeyDown` (same pattern
+as the existing local Ctrl+F/Z/Y/K/C/X/V shortcuts — not also registered as
+an Obsidian command hotkey, to avoid a double-fire/precedence conflict with
+the hardwired handler). D2 (geometry): **(c)**, left top→bottom then right
+bottom→top.
+**Alternatives:** recompute the split on every first-level add/remove/move
+(D1 option B) — rejected by the user; would reintroduce occasional whole-
+map reflows (up to full relayout of 2k+ nodes) mid-edit, the same class of
+problem the original sticky-sides fix addressed.
+**Cost:** split computation is O(first-level branches) — negligible even
+at 5,000 nodes; confirmed no regression via `npm run bench:m2` (Tab/rename/
+delete/fold/unfold, all of which exercise `assignMissingSides` on every
+mutation) — numbers indistinguishable from the pre-change baseline, see
+`benchmarks.md`.
+**Source:** `plans/03-ux-anticlockwise-node-order.md`.
+
+## 2026-07-06 — Bug fix: inline editor one-letter-per-line typing + click-closes-editor
+
+**Choice:** two independent fixes in the inline-edit path.
+(A) `InlineEditor` now grows its overlay's **width** with content (a hidden
+`white-space: pre` mirror `<span>` measures the longest line, clamped to
+`[minWidth, maxWidth]`), not just height — previously a freshly created
+(empty-text, `minNodeWidth`-only) node opened a ~40px-wide textarea, so the
+browser soft-wrapped nearly every typed character onto its own line, and the
+old height-only growth logic just made the box a one-character-wide column.
+`SvgRenderer.getNodeEditMetrics(node)` computes the same wrap ceiling
+(`wrapCeilingFor`) and depth-scaled font size the layout engine will use on
+commit, at the view's current zoom, so the overlay's growth ceiling and font
+metrics agree with what the node actually renders as — `minWidth`/`maxWidth`
+default to the old fixed `rect.width` when omitted (only test code omits
+them), so no behavior changed for existing callers.
+(B) `MindMapView`'s `contentEl` `mousedown` handler unconditionally called
+`.focus()`, including for clicks *inside the editor textarea itself* —
+focus jumped to `contentEl`, the textarea blurred, and blur commits (closes)
+the editor. So clicking mid-word to place the caret while editing yanked the
+editor away. Fixed by skipping the refocus when the click target is inside
+`.mm-inline-editor` or `.mm-search-panel`. Also gave `LinkModal` an
+`onClose` callback (see the arrow-key-navigation entry above) since it's the
+same root issue (focus not returning to `contentEl`) in a different spot.
+**Alternatives considered for (A):** measure via a `<canvas>` `measureText`
+call instead of a mirror DOM element — rejected, needs the exact same font
+shorthand string either way and the mirror-span approach reuses
+`getComputedStyle` directly with no separate canvas context to keep in
+sync.
+**Cost:** one DOM measurement (`scrollWidth` read) + one style write per
+keystroke on a detached overlay element, same order of magnitude as the
+pre-existing height-growth logic — well under the 16ms keystroke budget;
+model/layout/render pipeline untouched until commit.
+**Source:** `plans/02-ux-inline-editor-fixes.md`.
+
+## 2026-07-06 — Bug fix: structural (tree-aware) arrow-key navigation, geometric scan demoted to fallback
+
+**Choice:** `navigation.ts` adds `navigateFrom(node, direction, visibleNodes)`,
+which follows tree relationships first: Left/Right toward the root selects
+`node.parent`; away from the root selects the vertically-nearest visible
+child (`node.folded` → no target); Up/Down selects the previous/next
+sibling by on-screen y among `node.parent.children` (all guaranteed visible
+whenever `node` itself is, since a folded ancestor would have hidden `node`
+too — so no extra visibility filter is needed there). At the root, Left/Right
+picks the geometrically-nearest first-level child *filtered to that side*
+(`layout.side`), since the root's own `layout.side` is a meaningless
+hardcoded value, not a real side. `findNearestInDirection` (unchanged) is
+now only the fallback: root Up/Down, and Up/Down past a sibling group's
+first/last edge — the latter pre-filtered to nodes sharing the current
+node's side so up/down can walk across branch boundaries without ever
+crossing through the root to the opposite side.
+**Also:** `MindMapView.navigate()` no longer silently navigates from an
+implicit root when nothing is selected — the first arrow press now selects
+the root as visible feedback and stops, matching the way every other
+direction already requires an explicit prior selection. `LinkModal` gained
+an `onClose` callback (fired on save, remove, *and* dismiss/Escape) so
+`MindMapView` can restore focus to `contentEl`; previously only the
+save/remove paths implicitly worked, and dismissing via Escape left
+keyboard focus stranded on the closed modal, so arrow keys did nothing
+until the user clicked back into the pane.
+**Alternatives:** keep pure geometric scan and just retune the distance
+weighting — rejected: a cousin/off-branch node can always score better than
+the true sibling/parent/child for some multi-line or manually-positioned
+layout, so no weighting fully eliminates the wrong-branch jump; structural-
+first is what the tree actually models and matches XMind's arrow behavior.
+**Cost:** O(siblings) for the common parent/child/sibling-within-group case
+— strictly cheaper than the previous always-O(visible) scan. The two
+fallback paths (root Up/Down; Up/Down past a sibling group's edge) are
+O(visible), same as before, never worse.
+**Source:** `plans/01-bug-arrow-key-navigation.md`.
+
 ## 2026-07-04 — Feature: visual hierarchy by size (R15) — font/box scale by depth
 
 **Choice:** every node's box and font size now scale with depth: root
