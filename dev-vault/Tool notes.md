@@ -15,6 +15,7 @@
     - to paste into another thing
 - image gösterme
 - CTRL+M ile mind map modunu aç
+- link ve relation göster
 ## problems to fix
 - bugs
   - arrow keys does not function properly always
@@ -25,3 +26,4 @@
       - in editing view one click must navigate the cursor to the selected text part
   - nodes must be anticlockwise with the same order in the MD file
     - balancing must continue to work
+  - copy paste yapılmış branchin rengi parent renginde olmuyor
