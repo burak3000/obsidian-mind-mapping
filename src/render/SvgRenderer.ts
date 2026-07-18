@@ -820,6 +820,54 @@ export class SvgRenderer {
 		this.scheduleApplyViewport();
 	}
 
+	/** Comfortable screen-space padding (px) a just-created node should land within — F2/D4: pan only far enough to clear this margin, never re-center. Zoom-independent (screen px, not world px) since it's about visual/click comfort at the current zoom level, not a fixed world distance. */
+	private static readonly ENSURE_VISIBLE_MARGIN = 60;
+
+	/**
+	 * F2 (D4 — minimal-pan, resolved decision, see DECISIONS.md): pans just
+	 * far enough that `rect` (world-space) clears a comfortable margin
+	 * inside the viewport — never recenters, and does nothing at all if
+	 * `rect` already clears the margin on every side. Returns whether a pan
+	 * happened, so "already visible -> no viewport change" is directly
+	 * testable.
+	 *
+	 * Unlike `centerOnWorldPoint` and the drag/wheel pan handlers, this
+	 * applies the transform and re-culls *synchronously* instead of via the
+	 * rAF-batched `scheduleApplyViewport` — callers that need to
+	 * immediately follow up with `getNodeScreenRect` (namely: positioning
+	 * the inline editor right after creating an off-screen node, see
+	 * `MindMapView.onEditRequest`) can't wait a frame for `recull()` to run
+	 * and create the node's DOM element. This is a one-off programmatic
+	 * pan, not a per-pointer-move gesture, so skipping the rAF batch here
+	 * doesn't reopen the perf concern that batching solves for drag/wheel.
+	 */
+	ensureWorldRectVisible(rect: { x: number; y: number; w: number; h: number }): boolean {
+		const w = this.container.clientWidth || 800;
+		const h = this.container.clientHeight || 600;
+		const margin = SvgRenderer.ENSURE_VISIBLE_MARGIN;
+
+		const screenLeft = this.view.tx + rect.x * this.view.scale;
+		const screenRight = this.view.tx + (rect.x + rect.w) * this.view.scale;
+		const screenTop = this.view.ty + rect.y * this.view.scale;
+		const screenBottom = this.view.ty + (rect.y + rect.h) * this.view.scale;
+
+		let dx = 0;
+		if (screenLeft < margin) dx = margin - screenLeft;
+		else if (screenRight > w - margin) dx = w - margin - screenRight;
+
+		let dy = 0;
+		if (screenTop < margin) dy = margin - screenTop;
+		else if (screenBottom > h - margin) dy = h - margin - screenBottom;
+
+		if (dx === 0 && dy === 0) return false;
+
+		this.view.tx += dx;
+		this.view.ty += dy;
+		this.viewportG.setAttribute("transform", `translate(${this.view.tx}, ${this.view.ty}) scale(${this.view.scale})`);
+		this.recull();
+		return true;
+	}
+
 	destroy(): void {
 		this.svg.removeEventListener("pointerdown", this.onPointerDown);
 		this.svg.removeEventListener("pointermove", this.onPointerMove);

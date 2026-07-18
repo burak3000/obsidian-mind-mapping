@@ -178,7 +178,14 @@ export function moveNode(model: MindMapModel, nodeId: string, newParentId: strin
  * Detached (`parent: null`) — caller inserts it with `insertSubtree`.
  * Drops `manualPos`/`branchSide`: those are meaningful only at the original's
  * specific position in the tree and would misplace/overlap once pasted
- * elsewhere.
+ * elsewhere. Also drops `colorKey` (F1): it's only meaningful on a direct
+ * child of root, and the clone's eventual position (root-level vs. nested
+ * inside another branch) isn't known yet here — `assignMissingColors` gives
+ * it a fresh slot or lets it inherit its new parent branch's color once
+ * inserted, instead of carrying a stale copy of the original's color that
+ * would shadow the target branch's. Belt-and-suspenders with
+ * `assignMissingColors`'s own invariant enforcement: this keeps the clone
+ * clean from the instant it's created, before the next `onChange` even runs.
  */
 export function cloneSubtree(node: MindNode): MindNode {
 	const clone: MindNode = {
@@ -188,7 +195,6 @@ export function cloneSubtree(node: MindNode): MindNode {
 		parent: null,
 		depth: node.depth,
 		folded: node.folded,
-		colorKey: node.colorKey,
 		manualWidth: node.manualWidth,
 		subtreeCount: 0,
 		attachedContent: node.attachedContent ? [...node.attachedContent] : undefined,

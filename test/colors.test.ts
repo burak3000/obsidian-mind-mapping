@@ -41,6 +41,30 @@ describe("assignMissingColors", () => {
 		expect(model.root.children[2].colorKey).not.toBe(aColor);
 		expect(model.root.children[2].colorKey).not.toBe(bColor);
 	});
+
+	it("F1: clears a stale colorKey on any node whose parent is not the root", () => {
+		const model = parseMindMap(["# Root", "## A", "- a", "## B"].join("\n"), "fallback");
+		assignMissingColors(model.root);
+		const branchA = model.root.children[0];
+		const a = branchA.children[0];
+		// Simulate a stale copy of a first-level colorKey landing on a
+		// non-first-level node (e.g. a pre-fix cloneSubtree, or a moveNode
+		// that reparented a former first-level branch deeper into the tree).
+		a.colorKey = "c7";
+
+		assignMissingColors(model.root);
+
+		expect(a.colorKey).toBeUndefined();
+		expect(resolveNodeColorKey(a)).toBe(branchA.colorKey);
+	});
+
+	it("F1: a first-level branch's own colorKey is untouched by the invariant clear", () => {
+		const model = parseMindMap(["# Root", "## A", "## B"].join("\n"), "fallback");
+		assignMissingColors(model.root);
+		const before = model.root.children.map((c) => c.colorKey);
+		assignMissingColors(model.root);
+		expect(model.root.children.map((c) => c.colorKey)).toEqual(before);
+	});
 });
 
 describe("resolveNodeColorKey", () => {

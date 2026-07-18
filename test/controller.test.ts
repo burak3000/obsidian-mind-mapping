@@ -1,6 +1,7 @@
 import { describe, expect, it } from "vitest";
 import { parseMindMap } from "../src/sync/parser";
 import { Controller } from "../src/controller/Controller";
+import { assignMissingColors, resolveNodeColorKey } from "../src/render/colors";
 
 function makeController(md = "# Root\n## Branch A\n- a\n## Branch B\n") {
 	const model = parseMindMap(md, "fallback");
@@ -288,6 +289,71 @@ describe("Controller", () => {
 
 		controller.undo();
 		expect(branchB.children.length).toBe(0);
+	});
+});
+
+/**
+ * F1: `assignMissingColors` isn't part of `Controller` itself — it's run by
+ * the view's `onChange` handler, alongside `computeLayout`, after every
+ * mutation (see `MindMapView.onChange`). These tests call it explicitly
+ * right after the Controller mutation, the same way the real pipeline
+ * would, to exercise the paste/move color-adoption fix end-to-end rather
+ * than unit-testing `assignMissingColors` in isolation (already covered in
+ * colors.test.ts).
+ */
+describe("Controller + assignMissingColors (F1: pasted/moved branch adopts the target branch's color)", () => {
+	it("pasting a colored first-level branch inside a differently-colored branch resolves to the target's color", () => {
+		const controller = makeController(["# Root", "## Branch A", "- a", "## Branch B", "- b"].join("\n"));
+		assignMissingColors(controller.model.root);
+		const branchA = controller.model.root.children[0];
+		const branchB = controller.model.root.children[1];
+		expect(branchA.colorKey).not.toBe(branchB.colorKey);
+
+		controller.select(branchA.id);
+		controller.copySelected();
+		controller.select(branchB.id);
+		controller.pasteToSelected();
+		assignMissingColors(controller.model.root); // what MindMapView.onChange would do next
+
+		const pasted = branchB.children[branchB.children.length - 1];
+		expect(pasted.colorKey).toBeUndefined(); // not a first-level branch anymore
+		expect(resolveNodeColorKey(pasted)).toBe(branchB.colorKey);
+		expect(resolveNodeColorKey(pasted)).not.toBe(branchA.colorKey);
+	});
+
+	it("pasting a colored first-level branch at root level gets a fresh, distinct color", () => {
+		const controller = makeController(["# Root", "## Branch A", "- a", "## Branch B"].join("\n"));
+		assignMissingColors(controller.model.root);
+		const branchA = controller.model.root.children[0];
+		const branchB = controller.model.root.children[1];
+
+		controller.select(branchA.id);
+		controller.copySelected();
+		controller.select(null); // nothing selected -> pastes as a new child of root
+		controller.pasteToSelected();
+		assignMissingColors(controller.model.root);
+
+		const pasted = controller.model.root.children[controller.model.root.children.length - 1];
+		expect(pasted.colorKey).toBeDefined();
+		expect(pasted.colorKey).not.toBe(branchA.colorKey);
+		expect(pasted.colorKey).not.toBe(branchB.colorKey);
+	});
+
+	it("drag-reordering (moveNode) a first-level branch inside another branch adopts the target's color", () => {
+		const controller = makeController(["# Root", "## Branch A", "## Branch B"].join("\n"));
+		assignMissingColors(controller.model.root);
+		const branchA = controller.model.root.children[0];
+		const branchB = controller.model.root.children[1];
+		const staleColor = branchA.colorKey;
+		expect(staleColor).not.toBe(branchB.colorKey);
+
+		controller.moveNode(branchA.id, branchB.id, "inside");
+		assignMissingColors(controller.model.root); // what MindMapView.onChange would do next
+
+		expect(branchA.parent).toBe(branchB);
+		expect(branchA.colorKey).toBeUndefined(); // no longer a direct child of root
+		expect(resolveNodeColorKey(branchA)).toBe(branchB.colorKey);
+		expect(resolveNodeColorKey(branchA)).not.toBe(staleColor);
 	});
 });
 

@@ -173,10 +173,33 @@ export class MindMapView extends TextFileView implements ControllerListener {
 	}
 
 	onEditRequest(nodeId: string): void {
+		this.ensureNodeVisibleForEdit(nodeId);
 		this.openInlineEditor(nodeId);
 	}
 
 	// --- Inline editing ---
+
+	/**
+	 * F2: a freshly created node (Tab/Enter/Shift+Enter -> addChildToSelected/
+	 * addSiblingToSelected) can land outside the current viewport — or, on a
+	 * >300-node map, entirely culled out of the DOM (see `SvgRenderer`'s
+	 * culling threshold) — with nothing panning to it first. Runs ahead of
+	 * every `openInlineEditor` call (F2/dblclick-on-an-existing-node included)
+	 * rather than being duplicated per creation shortcut: an already-visible
+	 * node (the common F2/dblclick case) costs nothing extra, since
+	 * `ensureWorldRectVisible` no-ops and skips the recull entirely (D4,
+	 * minimal-pan — see DECISIONS.md). Must run *before* `openInlineEditor`
+	 * reads `getNodeScreenRect`: panning is what re-culls and creates the
+	 * node's DOM element in the first place when it was previously culled
+	 * out, and `ensureWorldRectVisible` does that re-cull synchronously
+	 * (not rAF-batched) for exactly this reason.
+	 */
+	private ensureNodeVisibleForEdit(nodeId: string): void {
+		if (!this.controller || !this.renderer) return;
+		const node = this.controller.model.byId.get(nodeId);
+		if (!node?.layout) return;
+		this.renderer.ensureWorldRectVisible(node.layout);
+	}
 
 	private openInlineEditor(nodeId: string): void {
 		if (!this.controller || !this.renderer) return;

@@ -1,5 +1,86 @@
 # Architectural Decision Records
 
+## 2026-07-18 — Fix (F2): new node brought into view before its editor opens, via minimal-pan (D4)
+
+**Bug (plan item F2, `plans/PLAN-relations-and-ux-fixes.md`):** a newly
+created node (Tab/Enter/Shift+Enter) could land outside the current
+viewport — or, on a >300-node map, be culled out of the DOM entirely (see
+`SvgRenderer`'s `CULL_THRESHOLD`) — with nothing panning to it first, so
+the inline editor opened off-screen or (culled case) not at all, since
+`getNodeScreenRect` returned `null`.
+**Decision D4 (asked, resolved):** minimal-pan / ensure-visible — pan only
+when the new node would be off-screen, and only far enough to bring it
+comfortably into view; never recenter/re-render when it's already visible.
+Chosen over "always `centerOnWorldPoint` the new node" (the more literal
+reading of the source note) because it avoids the whole map lurching on
+every plain Tab/Enter when the new node is already on screen (the common
+case) and skips a re-render entirely then, at zero cost — `focusNode`
+(search-jump) keeps using the existing always-center `centerOnWorldPoint`
+for its own use case, unchanged.
+**Implementation:** new `SvgRenderer.ensureWorldRectVisible(rect)` — pans
+`view.tx/ty` by the minimum screen-space delta needed to clear a fixed
+60px comfort margin on every side (returns `false`/no-ops if the rect
+already clears it), and — unlike `centerOnWorldPoint`/the drag/wheel pan
+handlers — applies the transform and re-culls **synchronously**, not via
+the rAF-batched `scheduleApplyViewport`. That's required, not just faster:
+`MindMapView.onEditRequest` calls it immediately before
+`openInlineEditor` reads `getNodeScreenRect`, and a culled-out node has no
+DOM element (hence no measurable rect) until a re-cull creates one — the
+rAF-batched path would leave that rect `null` for one frame. Wired into
+the existing `onEditRequest` funnel (not duplicated per shortcut), so it
+covers Tab/Enter/Shift+Enter uniformly; F2/dblclick-on-an-existing-node
+also passes through it but is a no-op in the normal case (node already
+visible). `pasteImageAsChild` does not currently call `emitEditRequest`
+(no editor opens for it today), so this fix doesn't change its behavior —
+flagged as an open question below, not decided silently.
+**Performance:** a pan is a cheap transform write + re-cull, same
+mechanism already used for search-jump; the common case (new node already
+visible) does zero extra work (early-return before any DOM write). Well
+under the Tab/Enter → editable budget (<50ms target / 100ms ceiling).
+**Tests:** `test/ensureVisible.test.ts` — an off-screen/culled node's
+screen rect lands fully within the viewport after the call, synchronously
+(no rAF wait); a freshly `addChild()`-ed off-screen node likewise; a node
+already comfortably visible leaves the viewport `transform` attribute
+unchanged (`changed === false`).
+
+## 2026-07-18 — Fix (F1): colorKey-only-on-first-level-child invariant (paste/move color bug)
+
+**Bug (plan item F1):** a first-level branch's `colorKey` is only
+meaningful on a direct child of root — `resolveNodeColorKey` walks up to
+the nearest ancestor carrying one. `cloneSubtree` copied `colorKey`
+verbatim, so copy/pasting a colored first-level branch *inside* another
+branch left the pasted subtree's root node carrying its old, now-stale
+`colorKey`, shadowing the target branch's color instead of inheriting it.
+The identical bug existed on the drag-reorder path (`moveNode` never
+touched `colorKey` at all).
+**Choice (design B from the plan, the recommended one over a
+paste-only fix):** enforce "`colorKey` lives only on a direct child of
+root" as an invariant inside `assignMissingColors`
+([colors.ts](../src/render/colors.ts)) — before assigning missing
+first-level colors, clear `colorKey` on every node whose parent isn't
+root. This runs every `onChange`, so it self-heals paste, drag-reorder,
+and any future mutation path in one place, instead of requiring a
+`colorKey`-drop fix in every mutation that can reparent a node. Paired
+with also dropping `colorKey` in `cloneSubtree`
+([mutations.ts](../src/model/mutations.ts)), matching how it already
+drops `manualPos`/`branchSide`, so a clone is clean the instant it's
+created rather than relying solely on the next `assignMissingColors` pass.
+**Alternative considered (design A, rejected as incomplete):** drop
+`colorKey` in `cloneSubtree` only — fixes paste but not drag-reorder
+(`moveNode`), so the identical bug would still reproduce via drag.
+**Cost:** O(nodes) clear folded into the existing per-`onChange`
+`assignMissingColors` walk — no new pass, nothing added to the keystroke
+hot path.
+**Tests:** `test/colors.test.ts` — a stale `colorKey` on a non-first-level
+node is cleared and the node re-resolves to its actual ancestor branch's
+color; a first-level branch's own `colorKey` survives repeated calls.
+`test/controller.test.ts` — paste a colored first-level branch inside a
+differently-colored branch → resolves to the target's color, not the
+original's; paste at root level → gets a fresh, distinct color; drag
+(`moveNode`) a first-level branch inside another branch → adopts the
+target's color the same way. No existing test asserted `cloneSubtree`
+preserves `colorKey`, so nothing needed updating there.
+
 ## 2026-07-07 — Fix: Rebalance hotkey moved to a real Obsidian command (Ctrl/Cmd+Shift+B)
 
 **Choice:** the Rebalance shortcut is now registered via `addCommand({hotkeys: [...]})`
