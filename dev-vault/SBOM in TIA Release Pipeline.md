@@ -113,3 +113,7 @@ mindmap:
         - create the class but do not implement it
 - 
 - 
+- aklsdflşadsf
+- dsalşkfjkd
+  - kljşasdfjk
+    - ![[Pasted image 20260718114319.png]]

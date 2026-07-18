@@ -197,28 +197,56 @@ function edgePath(parentLayout: LayoutSnapshot, childLayout: LayoutSnapshot, sid
 }
 
 /**
+ * Point on `rect`'s boundary reached by walking out from its center in
+ * direction `(dx, dy)` — i.e. where a ray toward the other node's center
+ * first exits this node's box. Used so a relation arrow leaves from the
+ * side of the source facing the target and lands on the side of the
+ * target facing the source (e.g. the source's right edge to the target's
+ * left edge when the target sits to the right), rather than passing
+ * through both boxes center-to-center, which is what made arrows hard to
+ * trace on wide maps.
+ */
+function rectBoundaryPoint(rect: LayoutSnapshot, dx: number, dy: number): { x: number; y: number } {
+	const cx = rect.x + rect.w / 2;
+	const cy = rect.y + rect.h / 2;
+	if (dx === 0 && dy === 0) return { x: cx, y: cy };
+	const hw = rect.w / 2;
+	const hh = rect.h / 2;
+	const tx = dx !== 0 ? hw / Math.abs(dx) : Infinity;
+	const ty = dy !== 0 ? hh / Math.abs(dy) : Infinity;
+	const t = Math.min(tx, ty);
+	return { x: cx + dx * t, y: cy + dy * t };
+}
+
+/**
  * Cheap cubic-Bezier relation arrow (R1a, D5: cheap Bezier+arrowhead over a
  * rich/routed/animated variant — start cheap, revisit only if requested).
- * A single S-curve between node centers, endpoint pulled back a few px so
- * the arrowhead marker (`#mm-relation-arrowhead`, set up in the
- * constructor) doesn't render on top of the target's own box/text. Unlike
- * `edgePath`'s tapered-ribbon-as-filled-polygon, this is a plain stroked
- * path — O(1) per relation (no per-sample loop), a fraction of an edge's
- * cost.
+ * A single S-curve anchored at box edges (`rectBoundaryPoint`) rather than
+ * box centers, with the endpoint pulled back a few px so the arrowhead
+ * marker (`#mm-relation-arrowhead`, set up in the constructor) doesn't
+ * render on top of the target's border. Unlike `edgePath`'s
+ * tapered-ribbon-as-filled-polygon, this is a plain stroked path — O(1)
+ * per relation (no per-sample loop), a fraction of an edge's cost.
  */
 function relationPath(source: LayoutSnapshot, target: LayoutSnapshot): string {
-	const x1 = source.x + source.w / 2;
-	const y1 = source.y + source.h / 2;
-	const x2raw = target.x + target.w / 2;
-	const y2raw = target.y + target.h / 2;
-	const dx = x2raw - x1;
-	const dy = y2raw - y1;
-	const dist = Math.hypot(dx, dy) || 1;
-	const pullback = Math.min(dist / 2, 10);
-	const x2 = x2raw - (dx / dist) * pullback;
-	const y2 = y2raw - (dy / dist) * pullback;
-	const midX = x1 + (x2 - x1) / 2;
-	return `M ${x1},${y1} C ${midX},${y1} ${midX},${y2} ${x2},${y2}`;
+	const sourceCx = source.x + source.w / 2;
+	const sourceCy = source.y + source.h / 2;
+	const targetCx = target.x + target.w / 2;
+	const targetCy = target.y + target.h / 2;
+	const dx = targetCx - sourceCx;
+	const dy = targetCy - sourceCy;
+
+	const start = rectBoundaryPoint(source, dx, dy);
+	const end = rectBoundaryPoint(target, -dx, -dy);
+
+	const ex = end.x - start.x;
+	const ey = end.y - start.y;
+	const dist = Math.hypot(ex, ey) || 1;
+	const pullback = Math.min(dist / 2, 6);
+	const x2 = end.x - (ex / dist) * pullback;
+	const y2 = end.y - (ey / dist) * pullback;
+	const midX = start.x + (x2 - start.x) / 2;
+	return `M ${start.x},${start.y} C ${midX},${start.y} ${midX},${y2} ${x2},${y2}`;
 }
 
 /**

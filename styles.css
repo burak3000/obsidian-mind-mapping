@@ -343,3 +343,68 @@
 .mm-search-result-active {
 	background: var(--background-modifier-active-hover, var(--background-modifier-hover));
 }
+
+.mm-link-modal {
+	width: min(640px, 92vw);
+}
+
+.mm-relation-setting {
+	flex-direction: column;
+	align-items: stretch;
+}
+
+.mm-relation-setting .setting-item-control {
+	width: 100%;
+	justify-content: stretch;
+}
+
+.mm-relation-combobox {
+	position: relative;
+	width: 100%;
+	text-align: left;
+}
+
+.mm-relation-combobox-input {
+	box-sizing: border-box;
+	width: 100%;
+	max-width: none;
+	padding: var(--size-4-2, 8px);
+	font-size: 14px;
+	text-align: left;
+}
+
+.mm-relation-combobox-list {
+	position: absolute;
+	top: calc(100% + 4px);
+	left: 0;
+	right: 0;
+	z-index: 60;
+	max-height: 280px;
+	overflow-y: auto;
+	background: var(--background-primary);
+	border: 1px solid var(--background-modifier-border);
+	border-radius: 6px;
+	box-shadow: var(--shadow-s, 0 2px 8px rgba(0, 0, 0, 0.2));
+}
+
+.mm-relation-combobox-item {
+	padding: var(--size-4-2, 8px);
+	font-size: 14px;
+	line-height: 1.4;
+	color: var(--text-normal);
+	cursor: pointer;
+	white-space: normal;
+	word-break: break-word;
+	text-align: left;
+}
+
+.mm-relation-combobox-item:hover,
+.mm-relation-combobox-item.is-active {
+	background: var(--background-modifier-active-hover, var(--background-modifier-hover));
+}
+
+.mm-relation-combobox-empty {
+	padding: var(--size-4-1, 4px) var(--size-4-2, 8px);
+	font-size: 13px;
+	color: var(--text-muted);
+}

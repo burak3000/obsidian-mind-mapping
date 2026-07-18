@@ -1,6 +1,9 @@
 import { App, Modal, Setting } from "obsidian";
 import { LinkKind } from "../model/links";
 
+/** Caps how many matches the relation combobox renders at once, so a 1,000+ node map doesn't dump its whole node list into the DOM on every keystroke. */
+const RELATION_COMBOBOX_MAX_RESULTS = 50;
+
 /** R1a authoring (D2a): a node in this map the relation dropdown can target. */
 export interface RelationTargetOption {
 	id: string;
@@ -60,6 +63,7 @@ export class LinkModal extends Modal {
 
 	onOpen(): void {
 		const { contentEl } = this;
+		this.modalEl.addClass("mm-link-modal");
 		contentEl.createEl("h3", { text: "Edit link" });
 
 		new Setting(contentEl).setName("Display text").addText((text) =>
@@ -85,17 +89,11 @@ export class LinkModal extends Modal {
 		);
 
 		if (this.opts.relationTargets.length > 0) {
-			new Setting(contentEl)
+			const setting = new Setting(contentEl)
 				.setName("Or: relation to a node in this map")
-				.setDesc("Pick a node instead of the Target field above — draws a same-document relation arrow rather than a regular link.")
-				.addDropdown((dropdown) => {
-					dropdown.addOption("", "— none —");
-					for (const opt of this.opts.relationTargets) dropdown.addOption(opt.id, opt.label);
-					dropdown.setValue(this.relationTargetNodeId ?? "");
-					dropdown.onChange((v) => {
-						this.relationTargetNodeId = v || null;
-					});
-				});
+				.setDesc("Search for a node by its text instead of the Target field above — draws a same-document relation arrow rather than a regular link.");
+			setting.settingEl.addClass("mm-relation-setting");
+			this.renderRelationCombobox(setting.controlEl);
 		}
 
 		const buttons = new Setting(contentEl);
@@ -133,5 +131,96 @@ export class LinkModal extends Modal {
 	onClose(): void {
 		this.contentEl.empty();
 		this.opts.onClose?.();
+	}
+
+	/**
+	 * Hand-rolled searchable combobox (input + filtered dropdown list) for
+	 * `relationTargets`. Not Obsidian's `AbstractInputSuggest`: that popover
+	 * is meant for workspace-level inputs and doesn't reliably show up when
+	 * attached to an input inside a `Modal`, so this renders its own list in
+	 * the modal's own DOM instead.
+	 */
+	private renderRelationCombobox(container: HTMLElement): void {
+		const initial = this.opts.relationTargets.find((o) => o.id === this.relationTargetNodeId);
+
+		const wrapper = container.createDiv({ cls: "mm-relation-combobox" });
+		const input = wrapper.createEl("input", {
+			type: "text",
+			cls: "mm-relation-combobox-input",
+			attr: { placeholder: "Search nodes by text…" },
+		});
+		if (initial) input.value = initial.label;
+		const list = wrapper.createDiv({ cls: "mm-relation-combobox-list" });
+		list.style.display = "none";
+
+		let activeIndex = -1;
+		let shown: RelationTargetOption[] = [];
+
+		const setActive = (index: number) => {
+			const items = list.querySelectorAll<HTMLElement>(".mm-relation-combobox-item");
+			items.forEach((el, i) => el.toggleClass("is-active", i === index));
+			activeIndex = index;
+		};
+
+		const closeList = () => {
+			list.style.display = "none";
+			activeIndex = -1;
+		};
+
+		const openList = (query: string) => {
+			const q = query.trim().toLowerCase();
+			shown = (q ? this.opts.relationTargets.filter((o) => o.label.toLowerCase().includes(q)) : this.opts.relationTargets).slice(
+				0,
+				RELATION_COMBOBOX_MAX_RESULTS
+			);
+			list.empty();
+			if (shown.length === 0) {
+				list.createDiv({ cls: "mm-relation-combobox-empty", text: "No matching nodes" });
+				list.style.display = "block";
+				activeIndex = -1;
+				return;
+			}
+			for (const opt of shown) {
+				const item = list.createDiv({ cls: "mm-relation-combobox-item", text: opt.label });
+				item.addEventListener("mousedown", (evt) => {
+					evt.preventDefault();
+					input.value = opt.label;
+					this.relationTargetNodeId = opt.id;
+					closeList();
+				});
+			}
+			list.style.display = "block";
+			setActive(0);
+		};
+
+		input.addEventListener("focus", () => openList(input.value));
+		input.addEventListener("input", () => {
+			this.relationTargetNodeId = null;
+			openList(input.value);
+		});
+		input.addEventListener("blur", () => closeList());
+		input.addEventListener("keydown", (evt) => {
+			if (list.style.display === "none" && (evt.key === "ArrowDown" || evt.key === "ArrowUp")) {
+				openList(input.value);
+				return;
+			}
+			if (evt.key === "ArrowDown") {
+				evt.preventDefault();
+				if (shown.length > 0) setActive((activeIndex + 1) % shown.length);
+			} else if (evt.key === "ArrowUp") {
+				evt.preventDefault();
+				if (shown.length > 0) setActive((activeIndex - 1 + shown.length) % shown.length);
+			} else if (evt.key === "Enter") {
+				if (activeIndex >= 0 && shown[activeIndex]) {
+					evt.preventDefault();
+					const opt = shown[activeIndex];
+					input.value = opt.label;
+					this.relationTargetNodeId = opt.id;
+					closeList();
+				}
+			} else if (evt.key === "Escape") {
+				closeList();
+			}
+		});
 	}
 }
