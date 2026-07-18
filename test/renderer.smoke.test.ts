@@ -7,6 +7,7 @@
 import { afterEach, describe, expect, it } from "vitest";
 import { parseMindMap } from "../src/sync/parser";
 import { computeLayout, DEFAULT_LAYOUT_CONFIG, fontSizeForDepth, scaleForDepth } from "../src/layout/layoutEngine";
+import { assignMissingSides } from "../src/layout/sides";
 import { SvgRenderer } from "../src/render/SvgRenderer";
 
 describe("SvgRenderer", () => {
@@ -94,7 +95,7 @@ describe("SvgRenderer", () => {
 		renderer.destroy();
 	});
 
-	it("keeps a link clickable even when its label is split across two wrapped lines", () => {
+	it("keeps a link clickable (Ctrl/Cmd+click) even when its label is split across two wrapped lines", () => {
 		const md = ["# Root", "## start of a long line [[Some Note]] and then it keeps going past the wrap point for sure"].join("\n");
 		const model = parseMindMap(md, "fallback");
 		computeLayout(model.root, { ...DEFAULT_LAYOUT_CONFIG, mode: "right-only" });
@@ -108,7 +109,7 @@ describe("SvgRenderer", () => {
 
 		const linkSpans = container.querySelectorAll(`[data-node-id="${branch.id}"] .mm-node-link`);
 		expect(linkSpans.length).toBeGreaterThan(0);
-		linkSpans[0].dispatchEvent(new MouseEvent("click", { bubbles: true }));
+		linkSpans[0].dispatchEvent(new MouseEvent("click", { bubbles: true, ctrlKey: true }));
 		expect(linkClicked).toEqual(["wikilink", "Some Note"]);
 
 		renderer.destroy();
@@ -494,6 +495,117 @@ describe("SvgRenderer", () => {
 		renderer.destroy();
 	});
 
+	it("a fold badge has an enlarged invisible hit-target circle in front of its visible circle, making the small badge easier to hit precisely", () => {
+		const md = ["# Root", "## Branch A", "- a"].join("\n");
+		const model = parseMindMap(md, "fallback");
+		const branch = model.root.children[0];
+		branch.folded = true;
+		computeLayout(model.root);
+
+		const container = document.createElement("div");
+		const renderer = new SvgRenderer(container);
+		renderer.mount(model);
+
+		const circles = container.querySelectorAll(`[data-node-id="${branch.id}"] .mm-fold-badge circle`);
+		expect(circles.length).toBe(2);
+		const [hitCircle, visibleCircle] = Array.from(circles);
+		expect(Number(hitCircle.getAttribute("r"))).toBeGreaterThan(Number(visibleCircle.getAttribute("r")));
+		expect(hitCircle.getAttribute("fill")).toBe("transparent"); // not "none" — "none" isn't hit-testable at all
+
+		renderer.destroy();
+	});
+
+	function badgeTranslateX(container: HTMLElement, nodeId: string): number {
+		const g = container.querySelector(`[data-node-id="${nodeId}"] .mm-fold-badge`)!;
+		const match = /translate\(\s*(-?[\d.]+)/.exec(g.getAttribute("transform") ?? "");
+		return match ? Number(match[1]) : NaN;
+	}
+
+	it("orientation-aware: puts the fold badge beside the resize handle (not on top of it), on the outward side matching the branch's L/R side", () => {
+		// Two first-level branches under "balanced" layout land one on each
+		// side (R11) — gives both a left-side and a right-side node from one
+		// mount, matching how a real map looks.
+		const md = ["# Root", "## Branch A", "- a", "## Branch B", "- b"].join("\n");
+		const model = parseMindMap(md, "fallback");
+		assignMissingSides(model.root);
+		computeLayout(model.root, DEFAULT_LAYOUT_CONFIG);
+		const left = model.root.children.find((n) => n.layout!.side === "L")!;
+		const right = model.root.children.find((n) => n.layout!.side === "R")!;
+		expect(left).toBeDefined();
+		expect(right).toBeDefined();
+
+		const container = document.createElement("div");
+		const renderer = new SvgRenderer(container);
+		renderer.mount(model);
+
+		// Resize handle occupies local x in [-3, 3] (L side) / [w-3, w+3] (R
+		// side) — see `handleX` in upsertNode. The badge's hit-circle (r=13)
+		// must not reach back INTO that column, but the gap between them is
+		// deliberately zero (touching, not overlapping) — any actual gap is
+		// empty canvas with nothing painted on it, and a right-click landing
+		// there misses `.mm-node` entirely and never opens the context menu
+		// (see DECISIONS.md). So the boundary is exact, not "well clear of":
+		// more negative x for a left-side node, more positive x (beyond the
+		// box) for a right-side node — never overlapping, never inward.
+		const leftBadgeX = badgeTranslateX(container, left.id);
+		expect(leftBadgeX).toBeLessThanOrEqual(-3 - 13); // touches, doesn't overlap, the resize handle's outer edge + hit-circle radius
+
+		const rightBadgeX = badgeTranslateX(container, right.id);
+		const rightWidth = right.layout!.w;
+		expect(rightBadgeX).toBeGreaterThanOrEqual(rightWidth + 3 + 13);
+
+		renderer.destroy();
+	});
+
+	it("regression: no dead-space gap between the resize handle and the fold badge — a gap there is unpainted canvas that a click could land in and miss .mm-node entirely (e.g. clearing the selection instead of hitting either control)", () => {
+		const md = ["# Root", "## Branch A", "- a"].join("\n");
+		const model = parseMindMap(md, "fallback");
+		computeLayout(model.root, { ...DEFAULT_LAYOUT_CONFIG, mode: "right-only" });
+		const branch = model.root.children[0];
+
+		const container = document.createElement("div");
+		const renderer = new SvgRenderer(container);
+		renderer.mount(model);
+
+		const handle = container.querySelector(`[data-node-id="${branch.id}"] .mm-resize-handle`)!;
+		const handleOuterEdge = Number(handle.getAttribute("x")) + Number(handle.getAttribute("width")); // right-side node: handle's far edge from the box
+
+		const badgeX = badgeTranslateX(container, branch.id);
+		const hitCircle = container.querySelector(`[data-node-id="${branch.id}"] .mm-fold-badge circle`)!;
+		const hitCircleNearEdge = badgeX - Number(hitCircle.getAttribute("r")); // badge's near edge, facing back toward the box/handle
+
+		expect(hitCircleNearEdge).toBeCloseTo(handleOuterEdge, 6); // touching exactly (modulo float noise) — not overlapping, not gapped
+
+		renderer.destroy();
+	});
+
+	it("the node's context menu opens on the node body (box/text) but NOT on its fold badge or resize handle — those are separate controls, not the node itself", () => {
+		const md = ["# Root", "## Branch A", "- a"].join("\n");
+		const model = parseMindMap(md, "fallback");
+		computeLayout(model.root, { ...DEFAULT_LAYOUT_CONFIG, mode: "right-only" });
+		const branch = model.root.children[0];
+
+		const container = document.createElement("div");
+		const renderer = new SvgRenderer(container);
+		let menuNodeId: string | null = null;
+		renderer.setNodeContextMenuHandler((id) => (menuNodeId = id));
+		renderer.mount(model);
+
+		const hitCircle = container.querySelector(`[data-node-id="${branch.id}"] .mm-fold-badge circle`)!;
+		hitCircle.dispatchEvent(new MouseEvent("contextmenu", { bubbles: true }));
+		expect(menuNodeId).toBeNull();
+
+		const handle = container.querySelector(`[data-node-id="${branch.id}"] .mm-resize-handle`)!;
+		handle.dispatchEvent(new MouseEvent("contextmenu", { bubbles: true }));
+		expect(menuNodeId).toBeNull();
+
+		const box = container.querySelector(`[data-node-id="${branch.id}"] rect:not(.mm-resize-handle)`)!;
+		box.dispatchEvent(new MouseEvent("contextmenu", { bubbles: true }));
+		expect(menuNodeId).toBe(branch.id);
+
+		renderer.destroy();
+	});
+
 	it("clicking a fold badge invokes the badge click handler with that node's id, not the node click handler", () => {
 		const md = ["# Root", "## Branch A", "- a"].join("\n");
 		const model = parseMindMap(md, "fallback");
@@ -514,6 +626,44 @@ describe("SvgRenderer", () => {
 
 		expect(badgeClickedId).toBe(branch.id);
 		expect(nodeClickedId).toBeNull();
+		renderer.destroy();
+	});
+
+	it("a real pointerdown/move/up/click sequence on a fold badge (with a few px of hand jitter) still toggles fold, not a reorder-drag", () => {
+		// Regression: the fold badge is nested inside `.mm-node`, and
+		// onPointerDown had no special case for it (unlike the resize
+		// handle), so a badge click fell through to the generic
+		// node-drag branch — a few px of movement between pointerdown and
+		// pointerup (trivial on a ~16px badge) got misread as a
+		// drag/reorder attempt instead of a click, silently swallowing the
+		// fold toggle. The test above only dispatched a bare "click" event
+		// and could never have caught this; this one drives the real
+		// pointerdown -> pointermove -> pointerup -> click sequence a
+		// physical click actually produces.
+		const md = ["# Root", "## Branch A", "- a", "## Branch B"].join("\n");
+		const model = parseMindMap(md, "fallback");
+		const branch = model.root.children[0];
+		branch.folded = true;
+		computeLayout(model.root);
+
+		const container = document.createElement("div");
+		const renderer = new SvgRenderer(container);
+		let badgeClickedId: string | null = null;
+		let reordered = false;
+		renderer.setBadgeClickHandler((id) => (badgeClickedId = id));
+		renderer.setReorderHandler(() => (reordered = true));
+		renderer.mount(model);
+
+		const badge = container.querySelector(`[data-node-id="${branch.id}"] .mm-fold-badge circle`)!;
+		const svg = container.querySelector(".mm-svg")!;
+		badge.dispatchEvent(new PointerEvent("pointerdown", { bubbles: true, clientX: 100, clientY: 100, pointerId: 1 }));
+		svg.dispatchEvent(new PointerEvent("pointermove", { bubbles: true, clientX: 106, clientY: 104, pointerId: 1 })); // >3px jitter
+		svg.dispatchEvent(new PointerEvent("pointerup", { bubbles: true, clientX: 106, clientY: 104, pointerId: 1 }));
+		badge.dispatchEvent(new MouseEvent("click", { bubbles: true })); // the native click a real pointerdown/up pair still fires
+
+		expect(reordered).toBe(false);
+		expect(badgeClickedId).toBe(branch.id);
+
 		renderer.destroy();
 	});
 
@@ -596,7 +746,7 @@ describe("SvgRenderer", () => {
 		renderer.destroy();
 	});
 
-	it("renders a link inside node text as a separate clickable tspan and routes its click to the link handler, not node select", () => {
+	it("renders a link inside node text as a separate clickable tspan; Ctrl/Cmd+click routes to the link handler, not node select", () => {
 		const model = parseMindMap(["# Root", "## Check [[Some Note]] please"].join("\n"), "fallback");
 		computeLayout(model.root);
 		const branch = model.root.children[0];
@@ -613,9 +763,32 @@ describe("SvgRenderer", () => {
 		const linkSpan = nodeG.querySelector(".mm-node-link")!;
 		expect(linkSpan.textContent).toBe("Some Note");
 
-		linkSpan.dispatchEvent(new MouseEvent("click", { bubbles: true }));
+		linkSpan.dispatchEvent(new MouseEvent("click", { bubbles: true, metaKey: true }));
 		expect(linkClicked).toEqual(["wikilink", "Some Note"]);
 		expect(nodeClicked).toBeNull();
+
+		renderer.destroy();
+	});
+
+	it("a plain (non-modifier) click on link text selects the node instead of navigating — a node whose text is a link must stay selectable", () => {
+		const model = parseMindMap(["# Root", "## Check [[Some Note]] please"].join("\n"), "fallback");
+		computeLayout(model.root);
+		const branch = model.root.children[0];
+
+		const container = document.createElement("div");
+		const renderer = new SvgRenderer(container);
+		let linkClicked: [string, string] | null = null;
+		let nodeClicked: string | null = null;
+		renderer.setLinkClickHandler((kind, target) => (linkClicked = [kind, target]));
+		renderer.setNodeClickHandler((id) => (nodeClicked = id));
+		renderer.mount(model);
+
+		const nodeG = container.querySelector(`[data-node-id="${branch.id}"]`)!;
+		const linkSpan = nodeG.querySelector(".mm-node-link")!;
+
+		linkSpan.dispatchEvent(new MouseEvent("click", { bubbles: true }));
+		expect(nodeClicked).toBe(branch.id);
+		expect(linkClicked).toBeNull();
 
 		renderer.destroy();
 	});
@@ -630,6 +803,41 @@ describe("SvgRenderer", () => {
 		const textEl = container.querySelector(`[data-node-id="${branch.id}"] .mm-node-text`)!;
 		expect(textEl.querySelector("tspan")).toBeNull();
 		expect(textEl.textContent).toBe("Plain branch");
+		renderer.destroy();
+	});
+
+	it("regression: a right-click (button 2) pointerdown never starts a drag/resize/pan gesture, even with real movement before the eventual pointerup", () => {
+		// A right-click's pointerdown was previously treated exactly like a
+		// left-click's (no button check anywhere in onPointerDown), so it
+		// still called capturePointer — which, in a real browser, can
+		// retarget the mouse events Chromium synthesizes afterward
+		// (including, plausibly, the `contextmenu` event itself), breaking
+		// the node context menu. Movement here is well past every drag
+		// threshold in this file; none of the drag handlers should fire.
+		const model = parseMindMap(["# Root", "## Branch A"].join("\n"), "fallback");
+		computeLayout(model.root, { ...DEFAULT_LAYOUT_CONFIG, mode: "right-only" });
+		const branch = model.root.children[0];
+
+		const container = document.createElement("div");
+		const renderer = new SvgRenderer(container);
+		let moved = false;
+		let resized = false;
+		let reordered = false;
+		renderer.setManualMoveHandler(() => (moved = true));
+		renderer.setManualWidthHandler(() => (resized = true));
+		renderer.setReorderHandler(() => (reordered = true));
+		renderer.mount(model);
+
+		const nodeG = container.querySelector(`[data-node-id="${branch.id}"]`)!;
+		nodeG.dispatchEvent(new PointerEvent("pointerdown", { bubbles: true, button: 2, altKey: true, clientX: 100, clientY: 100, pointerId: 1 }));
+		const svg = container.querySelector(".mm-svg")!;
+		svg.dispatchEvent(new PointerEvent("pointermove", { bubbles: true, button: 2, altKey: true, clientX: 200, clientY: 200, pointerId: 1 }));
+		svg.dispatchEvent(new PointerEvent("pointerup", { bubbles: true, button: 2, altKey: true, clientX: 200, clientY: 200, pointerId: 1 }));
+
+		expect(moved).toBe(false);
+		expect(resized).toBe(false);
+		expect(reordered).toBe(false);
+
 		renderer.destroy();
 	});
 

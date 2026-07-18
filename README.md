@@ -9,7 +9,7 @@ An XMind-like mind mapping view for [Obsidian](https://obsidian.md) that operate
 - **Organic, tapered, colored branches** — each first-level branch gets its own color, inherited by its descendants; branch width tapers with depth.
 - **Balanced auto-layout** — first-level branches are distributed left/right of the root to balance the map, XMind-style.
 - **Folding** with a child-count badge, persisted across sessions.
-- **Links** — wikilinks, URLs, and file paths are clickable directly on the map; `Ctrl/Cmd+K` opens a link editor.
+- **Links** — wikilinks, URLs, and file paths are clickable directly on the map; `Ctrl/Cmd+Shift+L` opens a link editor.
 - **Manual positioning** — `Alt`+drag any node to a custom position; a "Rebalance" command resets everything back to auto-layout.
 - **Undo/redo**, viewport culling and dirty-tracked rendering for large maps, and content-preserving serialization (anything the plugin doesn't understand — paragraphs, code blocks, unrelated frontmatter — round-trips untouched).
 
@@ -42,8 +42,8 @@ Open any markdown note as a mind map via the command palette (**Open as mind map
 | `Delete` / `Backspace` | Delete the selected node (+ its subtree) |
 | Arrow keys | Navigate to the nearest node in that direction |
 | `Ctrl/Cmd+Z` / `Ctrl/Cmd+Shift+Z` | Undo / redo |
-| `Ctrl/Cmd+/` | Fold / unfold the selected branch |
-| `Ctrl/Cmd+K` | Add / edit a link on the selected node |
+| `Ctrl/Cmd+/` or `Ctrl/Cmd+Shift+C` | Fold / unfold the selected branch |
+| `Ctrl/Cmd+Shift+L` | Add / edit a link (or a same-document relation) on the selected node |
 | `Ctrl/Cmd+=` / `Ctrl/Cmd+-` / mouse wheel | Zoom |
 | `Ctrl/Cmd+Home` | Center on the root |
 | Drag a node | Reorder it under the node you drop it on |

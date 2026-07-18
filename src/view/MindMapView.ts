@@ -11,10 +11,11 @@ import { navigateFrom, Direction } from "../render/navigation";
 import { collectVisibleNodes } from "../model/visibility";
 import { assignMissingColors } from "../render/colors";
 import { assignMissingSides } from "../layout/sides";
-import { ensurePersistentIds } from "../sync/metadata";
-import { LinkKind, buildLinkText, getImageEmbed, getSoleLink } from "../model/links";
+import { ensurePersistentIds, forcePersistentId } from "../sync/metadata";
+import { LinkKind, buildLinkText, getDisplayText, getImageEmbed, getSoleLink } from "../model/links";
 import { MindNode } from "../model/types";
-import { LinkModal } from "./LinkModal";
+import { resolveRelations } from "../model/relations";
+import { LinkModal, RelationTargetOption } from "./LinkModal";
 import { SearchPanel } from "./SearchPanel";
 import { searchNodes } from "../model/search";
 import { MindMapSettings } from "../settings/PluginSettings";
@@ -130,6 +131,10 @@ export class MindMapView extends TextFileView implements ControllerListener {
 		assignMissingColors(model.root);
 		assignMissingSides(model.root);
 		computeLayout(model.root, this.layoutConfig);
+		// R1a/R2: classify every node's links before the first mount, so
+		// relation arrows and cross-doc badges are present from the very first
+		// paint, not just after the first edit.
+		const activeRelations = resolveRelations(model, this.file?.basename ?? null);
 
 		this.inlineEditor?.destroy();
 		this.inlineEditor = null;
@@ -139,7 +144,7 @@ export class MindMapView extends TextFileView implements ControllerListener {
 		this.controller.addListener(this);
 
 		this.renderer?.destroy();
-		this.renderer = new SvgRenderer(container, this.settingsProvider.settings.animationNodeThreshold, this.layoutConfig);
+		this.renderer = new SvgRenderer(container, this.settingsProvider.settings.animationNodeThreshold, this.layoutConfig, this.settingsProvider.settings.showRelations);
 		this.renderer.setNodeClickHandler((id, evt) => {
 			if (evt.ctrlKey || evt.metaKey) this.controller?.toggleSelection(id);
 			else if (evt.shiftKey) this.controller?.selectRange(id);
@@ -147,6 +152,7 @@ export class MindMapView extends TextFileView implements ControllerListener {
 		});
 		this.renderer.setNodeDblClickHandler((id) => this.controller?.requestEdit(id));
 		this.renderer.setBadgeClickHandler((id) => this.controller?.toggleFold(id));
+		this.renderer.setCrossDocBadgeClickHandler((id) => this.openCrossDocRelation(id));
 		this.renderer.setBackgroundClickHandler(() => this.controller?.select(null));
 		this.renderer.setNodeContextMenuHandler((id, evt) => this.showNodeMenu(id, evt));
 		this.renderer.setLinkClickHandler((kind, target) => this.openLink(kind, target));
@@ -155,7 +161,7 @@ export class MindMapView extends TextFileView implements ControllerListener {
 		this.renderer.setManualMoveHandler((id, pos) => this.controller?.setManualPosition(id, pos));
 		this.renderer.setReorderHandler((id, targetId, position) => this.controller?.moveNode(id, targetId, position));
 		this.renderer.setManualWidthHandler((id, width) => this.controller?.setManualWidth(id, width));
-		this.renderer.mount(model);
+		this.renderer.mount(model, activeRelations);
 	}
 
 	// --- ControllerListener ---
@@ -165,7 +171,15 @@ export class MindMapView extends TextFileView implements ControllerListener {
 		assignMissingColors(this.controller.model.root);
 		assignMissingSides(this.controller.model.root);
 		computeLayout(this.controller.model.root, this.layoutConfig);
-		this.renderer.update(this.controller.model);
+		// R1a/R2: re-classify every node's links against the now-current tree
+		// (a rename/delete/undo can change which block ids exist) *before*
+		// ensurePersistentIds/serialize, since both depend on the
+		// `isRelationTarget` flags this sets (R1a item 2 — forces a relation's
+		// target to keep its block-id suffix across serialize). See
+		// model/relations.ts's own doc comment for why this walk is cheap
+		// despite running on every change, not just relation edits.
+		const activeRelations = resolveRelations(this.controller.model, this.file?.basename ?? null);
+		this.renderer.update(this.controller.model, activeRelations);
 		this.renderer.setSelection(this.controller.selectedIds, this.controller.selectedId);
 		ensurePersistentIds(this.controller.model.root, this.controller.model.byId);
 		this.data = serializeMindMap(this.controller.model, this.serializeConfig);
@@ -278,18 +292,71 @@ export class MindMapView extends TextFileView implements ControllerListener {
 		return dest ? this.app.vault.getResourcePath(dest) : null;
 	}
 
+	/** R2: clicking a node's cross-document badge opens its first cross-doc relation target via the same path a regular link click uses (`openLink`, reused rather than reinvented per the plan). A node with several cross-doc relations (rare) only opens the first — a picker for that case is outside the minimum badge+click design (D3). */
+	private openCrossDocRelation(nodeId: string): void {
+		if (!this.controller) return;
+		const node = this.controller.model.byId.get(nodeId);
+		const relation = node?.resolvedRelations?.find((r) => r.kind === "cross-doc");
+		if (!relation) return;
+		this.openLink(relation.linkKind, relation.rawTarget);
+	}
+
+	/** Display label for a node in the relation-target picker (R1a authoring): its link-stripped text, truncated so long node text doesn't blow out the dropdown. */
+	private relationOptionLabel(node: MindNode): string {
+		const text = getDisplayText(node.text).trim() || "(untitled)";
+		return text.length > 48 ? `${text.slice(0, 48)}…` : text;
+	}
+
+	/**
+	 * Ctrl/Cmd+Shift+L (R5, extended by R1a item 6; moved off Ctrl/Cmd+K —
+	 * see the keydown handler): besides the existing free-text
+	 * wikilink/URL editor, offers a dropdown of every other node in this map
+	 * as a same-document relation target. Picking one forces that target to
+	 * have a persistent block id *before* building the link text
+	 * (`forcePersistentId` — see its own doc comment in sync/metadata.ts for
+	 * why minting has to happen here, at authoring time, rather than being
+	 * left to the next `ensurePersistentIds` pass), then writes `[[#^id]]`
+	 * to the source node via the same `commitRename` path every other edit
+	 * here already uses (undo/redo, debounced write-back, all unchanged).
+	 */
 	private openLinkEditor(nodeId: string): void {
 		if (!this.controller) return;
 		const node = this.controller.model.byId.get(nodeId);
 		if (!node) return;
 		const existing = getSoleLink(node.text);
+		const existingRelation = node.resolvedRelations?.find((r) => r.kind === "same-doc");
+		const relationTargetNode = existingRelation?.targetId ? this.controller.model.byId.get(existingRelation.targetId) : undefined;
+
+		const relationTargets: RelationTargetOption[] = [];
+		const collectTargets = (n: MindNode) => {
+			if (n !== node) relationTargets.push({ id: n.id, label: this.relationOptionLabel(n) });
+			n.children.forEach(collectTargets);
+		};
+		collectTargets(this.controller.model.root);
+
+		// A bare `[[#^id]]` link (no alias) prefills an ugly raw-target label
+		// ("#^id") — when it's a resolved same-doc relation, show the target
+		// node's own text instead, a much more meaningful default.
+		const initialLabel = existing && existingRelation && existing.label === existing.target && relationTargetNode ? this.relationOptionLabel(relationTargetNode) : (existing?.label ?? node.text);
 
 		new LinkModal(this.app, {
-			initialLabel: existing?.label ?? node.text,
+			initialLabel,
 			initialKind: existing?.kind ?? "wikilink",
 			initialTarget: existing?.target ?? "",
 			hasExistingLink: existing !== null,
-			onSave: (result) => this.controller?.commitRename(nodeId, buildLinkText(result)),
+			relationTargets,
+			initialRelationTargetNodeId: existingRelation?.targetId,
+			onSave: (result) => {
+				if (result.relationTargetNodeId) {
+					const targetNode = this.controller?.model.byId.get(result.relationTargetNodeId);
+					if (targetNode && this.controller) {
+						const id = forcePersistentId(targetNode, this.controller.model.byId);
+						this.controller.commitRename(nodeId, buildLinkText({ label: result.label, kind: "wikilink", target: `#^${id}` }));
+					}
+					return;
+				}
+				this.controller?.commitRename(nodeId, buildLinkText(result));
+			},
 			onRemove: () => {
 				if (existing) this.controller?.commitRename(nodeId, existing.label);
 			},
@@ -601,7 +668,21 @@ export class MindMapView extends TextFileView implements ControllerListener {
 		} else if (mod && evt.key === "/") {
 			evt.preventDefault();
 			if (this.controller.selectedId) this.controller.toggleFold(this.controller.selectedId);
-		} else if (mod && evt.key.toLowerCase() === "k") {
+		} else if (mod && evt.shiftKey && evt.key.toLowerCase() === "c") {
+			// Second binding for the same fold/unfold action as Mod+/ above —
+			// not a replacement. Not known to collide with anything in this
+			// plugin or an Obsidian core default at the time this was added;
+			// if it turns out to clash with something in a live vault
+			// (Settings -> Hotkeys), rebind the same way Mod+K -> Mod+Shift+L
+			// was resolved for the link editor.
+			evt.preventDefault();
+			if (this.controller.selectedId) this.controller.toggleFold(this.controller.selectedId);
+		} else if (mod && evt.shiftKey && evt.key.toLowerCase() === "l") {
+			// Not Mod+K: Obsidian's own core "Insert markdown link" command
+			// defaults to that binding and its global hotkey manager wins the
+			// keystroke before this view-scoped handler ever sees it (same
+			// class of collision as the Rebalance command's move off
+			// Mod+Shift+B — see DECISIONS.md).
 			evt.preventDefault();
 			if (this.controller.selectedId) this.openLinkEditor(this.controller.selectedId);
 		} else if (mod && evt.key.toLowerCase() === "c") {
@@ -677,6 +758,7 @@ export class MindMapView extends TextFileView implements ControllerListener {
 		assignMissingColors(newModel.root);
 		assignMissingSides(newModel.root);
 		computeLayout(newModel.root, this.layoutConfig);
+		const activeRelations = resolveRelations(newModel, this.file?.basename ?? null);
 
 		let newSelectedId: string | null = null;
 		const oldSelectedNode = oldSelectedId ? oldModel.byId.get(oldSelectedId) : undefined;
@@ -696,7 +778,7 @@ export class MindMapView extends TextFileView implements ControllerListener {
 		// mount, not a diffed update; the plan explicitly allows full
 		// re-parse as the M2 fallback (incremental region re-parse is a
 		// later optimization).
-		this.renderer?.mount(newModel);
+		this.renderer?.mount(newModel, activeRelations);
 		this.renderer?.selectNode(newSelectedId);
 	}
 }

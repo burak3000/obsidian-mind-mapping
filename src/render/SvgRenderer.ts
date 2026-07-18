@@ -26,6 +26,14 @@ interface BadgeDom {
 	text: SVGTextElement;
 }
 
+/** R2: cross-document relation indicator — a small badge shown only on a node whose text links to a different document (as opposed to a same-doc relation, which gets an R1a arrow instead). */
+interface CrossDocBadgeDom {
+	g: SVGGElement;
+	circle: SVGCircleElement;
+	text: SVGTextElement;
+	title: SVGTitleElement;
+}
+
 /** Image thumbnail (R-image-display, decision A: fixed-size thumb, click to open). `placeholder` shows until `image` loads (or permanently, with `missing` on top, if it errors) — created lazily, only for nodes whose text actually has an image embed. */
 interface ImageDom {
 	g: SVGGElement;
@@ -42,6 +50,7 @@ interface NodeDom {
 	colorClass: string | null;
 	badge: BadgeDom | null;
 	image: ImageDom | null;
+	crossDocBadge: CrossDocBadgeDom | null;
 }
 
 interface LayoutSnapshot {
@@ -74,6 +83,25 @@ const DEFAULT_ANIMATION_NODE_THRESHOLD = 500;
 const CULL_THRESHOLD = 300;
 /** User-space padding around the viewport so nodes don't pop in/out right at the edge while panning. */
 const CULL_MARGIN = 400;
+/**
+ * How far the fold badge sits beyond the resize handle's outer edge
+ * (`RESIZE_HANDLE_HALF_WIDTH`), so the two no longer occupy the same node
+ * edge. Side-by-side, in outward order from the box: resize handle
+ * (unchanged, still adjacent to the box edge — a grab handle belongs right
+ * on the thing it resizes), then the fold badge beyond it, at the branch's
+ * actual tip. `BADGE_OUTWARD_GAP` is 0 (touching, not overlapping) rather
+ * than a visible gap — a real gap is empty canvas with no element on it at
+ * all, and a right-click landing there misses `.mm-node` entirely, falling
+ * through to nothing instead of opening the node's context menu (see
+ * DECISIONS.md — this was shipped once with a 4px gap and had to be
+ * corrected). Zero gap still keeps the badge's hit-circle
+ * (`BADGE_HIT_RADIUS`) from reaching back INTO the resize handle's column,
+ * so the two remain non-overlapping, just adjacent instead of spaced apart.
+ */
+const RESIZE_HANDLE_HALF_WIDTH = 3;
+const BADGE_HIT_RADIUS = 13;
+const BADGE_OUTWARD_GAP = 0;
+const BADGE_OUTWARD_OFFSET = RESIZE_HANDLE_HALF_WIDTH + BADGE_OUTWARD_GAP + BADGE_HIT_RADIUS;
 
 function el<K extends keyof SVGElementTagNameMap>(tag: K): SVGElementTagNameMap[K] {
 	return document.createElementNS(SVG_NS, tag);
@@ -169,6 +197,31 @@ function edgePath(parentLayout: LayoutSnapshot, childLayout: LayoutSnapshot, sid
 }
 
 /**
+ * Cheap cubic-Bezier relation arrow (R1a, D5: cheap Bezier+arrowhead over a
+ * rich/routed/animated variant — start cheap, revisit only if requested).
+ * A single S-curve between node centers, endpoint pulled back a few px so
+ * the arrowhead marker (`#mm-relation-arrowhead`, set up in the
+ * constructor) doesn't render on top of the target's own box/text. Unlike
+ * `edgePath`'s tapered-ribbon-as-filled-polygon, this is a plain stroked
+ * path — O(1) per relation (no per-sample loop), a fraction of an edge's
+ * cost.
+ */
+function relationPath(source: LayoutSnapshot, target: LayoutSnapshot): string {
+	const x1 = source.x + source.w / 2;
+	const y1 = source.y + source.h / 2;
+	const x2raw = target.x + target.w / 2;
+	const y2raw = target.y + target.h / 2;
+	const dx = x2raw - x1;
+	const dy = y2raw - y1;
+	const dist = Math.hypot(dx, dy) || 1;
+	const pullback = Math.min(dist / 2, 10);
+	const x2 = x2raw - (dx / dist) * pullback;
+	const y2 = y2raw - (dy / dist) * pullback;
+	const midX = x1 + (x2 - x1) / 2;
+	return `M ${x1},${y1} C ${midX},${y1} ${midX},${y2} ${x2},${y2}`;
+}
+
+/**
  * Hand-rolled, incrementally-updated SVG renderer (plan §5, §9.5). `mount`
  * does one full build (file open); `update` after that only touches nodes
  * whose text/position/width actually changed plus their incident edges —
@@ -180,6 +233,7 @@ export class SvgRenderer {
 	private readonly svg: SVGSVGElement;
 	private readonly viewportG: SVGGElement;
 	private readonly edgesG: SVGGElement;
+	private readonly relationsG: SVGGElement;
 	private readonly nodesG: SVGGElement;
 
 	private readonly nodeEls = new Map<string, NodeDom>();
@@ -188,6 +242,14 @@ export class SvgRenderer {
 	private readonly lastSide = new Map<string, "L" | "R">();
 	private readonly lastText = new Map<string, string>();
 	private readonly lastEdgeD = new Map<string, string>(); // keyed by child node id
+
+	/** R1a: same-doc relation arrows — keyed by `${sourceId}::${targetId}`, same dirty-tracked-`d` + cull-driven add/remove discipline as `edgeEls`/`lastEdgeD`. See `updateRelations`. */
+	private readonly relationEls = new Map<string, SVGPathElement>();
+	private readonly lastRelationD = new Map<string, string>();
+	/** The active same-doc relation (source id, target id) pairs as of the last `update()` — recomputed by the caller (`model/relations.ts`'s `resolveRelations`) on model change, *not* here, and *not* on every pan/zoom recull (R1a item 4: never recompute all arrows on pan/zoom). */
+	private activeRelations: { sourceId: string; targetId: string }[] = [];
+	/** Snapshot of the fold-visible node id set as of the last `update()` — O(1) membership test so `updateRelations` can skip a relation whose endpoint is currently folded away (R1a item 3) without re-walking the fold tree on every recull. */
+	private lastFoldVisibleIds: Set<string> = new Set();
 
 	private readonly view: Viewport;
 	private rafHandle: number | null = null;
@@ -204,6 +266,8 @@ export class SvgRenderer {
 	private onNodeClick: ((nodeId: string, evt: MouseEvent) => void) | null = null;
 	private onNodeDblClick: ((nodeId: string) => void) | null = null;
 	private onBadgeClick: ((nodeId: string) => void) | null = null;
+	/** R2: fired when a node's cross-document relation badge is clicked. */
+	private onCrossDocBadgeClick: ((nodeId: string) => void) | null = null;
 	/** Fired on a plain click that lands on empty canvas (not a node/badge/link) — lets the caller clear the current selection, giving visible confirmation that the canvas itself received the click (see: users couldn't tell whether clicking the background did anything). */
 	private onBackgroundClick: (() => void) | null = null;
 	private onLinkClick: ((kind: LinkKind, target: string) => void) | null = null;
@@ -228,7 +292,9 @@ export class SvgRenderer {
 	constructor(
 		private readonly container: HTMLElement,
 		private readonly animationNodeThreshold: number = DEFAULT_ANIMATION_NODE_THRESHOLD,
-		private readonly textCfg: TextMetricsConfig = DEFAULT_LAYOUT_CONFIG
+		private readonly textCfg: TextMetricsConfig = DEFAULT_LAYOUT_CONFIG,
+		/** R1a item 5 (`showRelations` setting): when false, `updateRelations` never runs and `relationsG` stays permanently empty — "no arrows/relation layer work happens" at all, not just hidden via CSS. Baked in at construction like the other settings-derived constructor params (`animationNodeThreshold`), so a mid-session toggle takes effect the next time the map is (re)opened. */
+		private readonly showRelations: boolean = true
 	) {
 		while (container.firstChild) container.removeChild(container.firstChild);
 
@@ -238,6 +304,24 @@ export class SvgRenderer {
 		this.svg.classList.add("mm-svg");
 		container.appendChild(this.svg);
 
+		// R1a: arrowhead marker for relation arrows, defined once and referenced
+		// by every relation path's `marker-end` (see `updateRelations`).
+		const defs = el("defs");
+		const marker = el("marker");
+		marker.setAttribute("id", "mm-relation-arrowhead");
+		marker.setAttribute("viewBox", "0 0 10 10");
+		marker.setAttribute("refX", "9");
+		marker.setAttribute("refY", "5");
+		marker.setAttribute("markerWidth", "6");
+		marker.setAttribute("markerHeight", "6");
+		marker.setAttribute("orient", "auto-start-reverse");
+		const markerPath = el("path");
+		markerPath.setAttribute("d", "M 0 0 L 10 5 L 0 10 z");
+		markerPath.classList.add("mm-relation-arrowhead-path");
+		marker.appendChild(markerPath);
+		defs.appendChild(marker);
+		this.svg.appendChild(defs);
+
 		this.viewportG = el("g");
 		this.viewportG.classList.add("mm-viewport");
 		this.svg.appendChild(this.viewportG);
@@ -245,6 +329,12 @@ export class SvgRenderer {
 		this.edgesG = el("g");
 		this.edgesG.classList.add("mm-edges");
 		this.viewportG.appendChild(this.edgesG);
+
+		// Between edgesG and nodesG (R1a item 3): relation arrows read as
+		// underneath node boxes but above branch edges.
+		this.relationsG = el("g");
+		this.relationsG.classList.add("mm-relations");
+		this.viewportG.appendChild(this.relationsG);
 
 		this.nodesG = el("g");
 		this.nodesG.classList.add("mm-nodes");
@@ -291,6 +381,11 @@ export class SvgRenderer {
 		this.onBadgeClick = fn;
 	}
 
+	/** R2: cross-document relation badge click — the view layer resolves the node's cross-doc relation(s) and opens the target via the existing `openLink` path. */
+	setCrossDocBadgeClickHandler(fn: (nodeId: string) => void): void {
+		this.onCrossDocBadgeClick = fn;
+	}
+
 	/** Plain click on empty canvas (not panned) — see `onBackgroundClick`. */
 	setBackgroundClickHandler(fn: () => void): void {
 		this.onBackgroundClick = fn;
@@ -325,20 +420,29 @@ export class SvgRenderer {
 	}
 
 	/** Full build — intended for file open only, not per-edit. */
-	mount(model: MindMapModel): void {
+	mount(model: MindMapModel, activeRelations: { sourceId: string; targetId: string }[] = []): void {
 		this.nodeEls.forEach((dom) => dom.g.remove());
 		this.edgeEls.forEach((edge) => edge.remove());
+		this.relationEls.forEach((path) => path.remove());
 		this.nodeEls.clear();
 		this.edgeEls.clear();
+		this.relationEls.clear();
 		this.lastLayout.clear();
 		this.lastSide.clear();
 		this.lastText.clear();
 		this.lastEdgeD.clear();
-		this.update(model);
+		this.lastRelationD.clear();
+		this.update(model, activeRelations);
 	}
 
-	/** Dirty-tracked update: create/update/remove only what changed. */
-	update(model: MindMapModel): void {
+	/**
+	 * Dirty-tracked update: create/update/remove only what changed.
+	 * `activeRelations` (R1a) is supplied by the caller — `model/relations.ts`'s
+	 * `resolveRelations`, run once per model change in `MindMapView.onChange` —
+	 * rather than recomputed here, so this stays a pure "draw what I'm given"
+	 * step with no relation-resolution cost of its own.
+	 */
+	update(model: MindMapModel, activeRelations: { sourceId: string; targetId: string }[] = []): void {
 		this.lastModel = model;
 		const foldVisible = collectVisibleNodes(model.root);
 		// CSS transition on .mm-node transform, gated by this class — cheap
@@ -350,6 +454,14 @@ export class SvgRenderer {
 		this.cullingActive = foldVisible.length > CULL_THRESHOLD;
 		const inViewport = this.cullingActive ? this.cullToViewport(foldVisible) : foldVisible;
 		this.applyVisibleSet(inViewport);
+
+		// R1a item 5: showRelations=false means zero relation work, not just a
+		// hidden layer — activeRelations is simply never stored or drawn.
+		if (this.showRelations) {
+			this.lastFoldVisibleIds = new Set(foldVisible.map((n) => n.id));
+			this.activeRelations = activeRelations;
+			this.updateRelations();
+		}
 	}
 
 	/** Re-applies culling against the last-known model without a full relayout — called on pan/zoom so panning a huge map keeps trimming the DOM as new nodes scroll into view. No-op below the culling threshold. */
@@ -357,6 +469,76 @@ export class SvgRenderer {
 		if (!this.cullingActive || !this.lastModel) return;
 		const foldVisible = collectVisibleNodes(this.lastModel.root);
 		this.applyVisibleSet(this.cullToViewport(foldVisible));
+		// R1a item 4: relations are re-culled on pan/zoom too (mirrors edges,
+		// which already redraw-but-diff-skip every recull) — cheap, since it's
+		// bounded by `activeRelations.length` (a membership test + a `d`-string
+		// rebuild-and-compare per relation, no DOM write unless something
+		// actually changed), never a re-walk of the fold tree or a full
+		// re-resolution of relation links. `lastFoldVisibleIds`/`activeRelations`
+		// themselves are untouched here — only set by `update()` — so pure
+		// pan/zoom never re-derives them.
+		if (this.showRelations && this.cullingActive) this.updateRelations();
+	}
+
+	/**
+	 * Dirty-tracked + culled relation-arrow sync (R1a item 4), the same
+	 * discipline `upsertEdge` uses for branches: rebuild each active
+	 * relation's path string and only write the DOM attribute when it
+	 * actually changed, so a pure pan/zoom (no layout change, geometry
+	 * unchanged) is a cheap membership-check-and-skip. Reads endpoint
+	 * geometry straight from `node.layout` (always current for a
+	 * fold-visible node, regardless of DOM culling) rather than the
+	 * renderer's own `lastLayout` cache, since a relation's target commonly
+	 * won't have DOM of its own (off-screen, culled out) even while its
+	 * source is visible.
+	 */
+	private updateRelations(): void {
+		const model = this.lastModel;
+		if (!model) return;
+		const bounds = this.cullingActive ? this.getViewportBoundsUserSpace() : null;
+		const seen = new Set<string>();
+
+		for (const { sourceId, targetId } of this.activeRelations) {
+			const key = `${sourceId}::${targetId}`;
+			if (seen.has(key)) continue; // dedupe: e.g. two links in one node's text pointing at the same target
+			const source = model.byId.get(sourceId);
+			const target = model.byId.get(targetId);
+			// Skip relations whose endpoint is folded/hidden/unresolved (R1a
+			// item 3) — fold-visibility is an O(1) lookup against the snapshot
+			// `update()` took, not a fold-tree re-walk, so this stays cheap even
+			// when called from `recull()` on every pan/zoom frame.
+			if (!source?.layout || !target?.layout || !this.lastFoldVisibleIds.has(sourceId) || !this.lastFoldVisibleIds.has(targetId)) {
+				continue;
+			}
+			if (bounds && !this.intersectsBounds(source.layout, bounds) && !this.intersectsBounds(target.layout, bounds)) {
+				continue; // both endpoints fully outside the viewport + margin
+			}
+
+			seen.add(key);
+			let path = this.relationEls.get(key);
+			let isNew = false;
+			if (!path) {
+				path = el("path");
+				path.classList.add("mm-relation");
+				path.setAttribute("marker-end", "url(#mm-relation-arrowhead)");
+				this.relationsG.appendChild(path);
+				this.relationEls.set(key, path);
+				isNew = true;
+			}
+			const d = relationPath(source.layout, target.layout);
+			if (isNew || this.lastRelationD.get(key) !== d) {
+				path.setAttribute("d", d);
+				this.lastRelationD.set(key, d);
+			}
+		}
+
+		for (const [key, path] of this.relationEls) {
+			if (!seen.has(key)) {
+				path.remove();
+				this.relationEls.delete(key);
+				this.lastRelationD.delete(key);
+			}
+		}
 	}
 
 	private applyVisibleSet(visible: MindNode[]): void {
@@ -439,7 +621,7 @@ export class SvgRenderer {
 			g.appendChild(resizeHandle);
 
 			this.nodesG.appendChild(g);
-			dom = { g, rect, text, resizeHandle, colorClass: null, badge: null, image: null };
+			dom = { g, rect, text, resizeHandle, colorClass: null, badge: null, image: null, crossDocBadge: null };
 			this.nodeEls.set(node.id, dom);
 			if (this.selectedIds.has(node.id)) g.classList.add("mm-selected");
 			if (node.id === this.primaryId) g.classList.add("mm-selected-primary");
@@ -488,6 +670,7 @@ export class SvgRenderer {
 		}
 
 		this.upsertBadge(node, dom, layout);
+		this.upsertCrossDocBadge(node, dom, layout);
 	}
 
 	/** The wrap ceiling in px for a node — a manually drag-resized width overrides the depth-scaled default; must match `computeNodeBox`'s exactly, or wrapped line count here could disagree with the box height layoutEngine already committed to. */
@@ -597,6 +780,17 @@ export class SvgRenderer {
 		if (!dom.badge) {
 			const g = el("g");
 			g.classList.add("mm-fold-badge");
+			// Invisible, larger hit-target behind the visible circle (fill
+			// "transparent", not "none" — SVG only hit-tests a painted fill,
+			// and "none" has no paint value at all, so the pointer would fall
+			// through to whatever's beneath). The badge now sits beyond the
+			// resize handle (see BADGE_OUTWARD_OFFSET) rather than on top of
+			// it, but the badge itself is still only ~16px across, so this
+			// stays as a general "easier to hit" margin.
+			const hitCircle = el("circle");
+			hitCircle.setAttribute("r", String(BADGE_HIT_RADIUS));
+			hitCircle.setAttribute("fill", "transparent");
+			g.appendChild(hitCircle);
 			const circle = el("circle");
 			circle.setAttribute("r", "8");
 			g.appendChild(circle);
@@ -609,10 +803,64 @@ export class SvgRenderer {
 		}
 
 		const side = node.layout!.side;
-		const badgeX = side === "L" ? 0 : layout.w;
+		// Side-by-side with the resize handle, not stacked on it: the handle
+		// stays put at the box's outer edge (local x=0 for "L", x=layout.w
+		// for "R"); the badge sits BADGE_OUTWARD_OFFSET further out, away
+		// from the box in the same outward direction the branch already
+		// grows for this side — negative x (further left) for "L", positive
+		// x (further right) for "R" — so it reads as "further along the
+		// branch," not as a second control fighting the resize handle for
+		// the same spot.
+		const badgeX = side === "L" ? -BADGE_OUTWARD_OFFSET : layout.w + BADGE_OUTWARD_OFFSET;
 		dom.badge.g.setAttribute("transform", `translate(${badgeX}, ${layout.h / 2})`);
 		dom.badge.g.classList.toggle("mm-fold-badge-folded", node.folded);
 		dom.badge.text.textContent = node.folded ? String(node.subtreeCount) : "–";
+	}
+
+	/**
+	 * R2: cross-document relation indicator — a small badge on any node whose
+	 * text has at least one *cross-doc* resolved relation (a same-map
+	 * relation gets an R1a arrow instead, not this badge; a node with no
+	 * link gets neither — see `model/relations.ts`'s classification). Reuses
+	 * `node.resolvedRelations`, cached by `resolveRelations` and already
+	 * current by the time `upsertNode` runs, so this is a cheap per-node
+	 * check (`.some`, no allocation in the common no-relations case) inside
+	 * the existing per-node dirty-tracked render path — no new global pass,
+	 * matching the same cost profile as `upsertBadge`'s fold indicator.
+	 */
+	private upsertCrossDocBadge(node: MindNode, dom: NodeDom, layout: LayoutSnapshot): void {
+		const relations = node.resolvedRelations;
+		const hasCrossDoc = !!relations && relations.some((r) => r.kind === "cross-doc");
+		if (!hasCrossDoc) {
+			if (dom.crossDocBadge) {
+				dom.crossDocBadge.g.remove();
+				dom.crossDocBadge = null;
+			}
+			return;
+		}
+
+		if (!dom.crossDocBadge) {
+			const g = el("g");
+			g.classList.add("mm-cross-doc-badge");
+			const circle = el("circle");
+			circle.setAttribute("r", "7");
+			g.appendChild(circle);
+			const text = el("text");
+			text.setAttribute("text-anchor", "middle");
+			text.setAttribute("dominant-baseline", "central");
+			text.textContent = "↗"; // ↗ — external-link glyph
+			g.appendChild(text);
+			const title = el("title");
+			g.appendChild(title);
+			dom.g.appendChild(g);
+			dom.crossDocBadge = { g, circle, text, title };
+		}
+
+		const side = node.layout!.side;
+		const badgeX = side === "L" ? 0 : layout.w;
+		dom.crossDocBadge.g.setAttribute("transform", `translate(${badgeX}, -8)`);
+		const targets = relations!.filter((r) => r.kind === "cross-doc").map((r) => r.rawTarget);
+		dom.crossDocBadge.title.textContent = `Links to: ${targets.join(", ")}`;
 	}
 
 	/**
@@ -893,7 +1141,28 @@ export class SvgRenderer {
 	};
 
 	private onPointerDown = (evt: PointerEvent): void => {
+		// Right-click (button 2) must never start a drag/resize/pan gesture
+		// or call capturePointer — none of that had a button check before,
+		// so a right-click's pointerdown was captured by this.svg like any
+		// other, and that capture could retarget the mouse events Chromium
+		// derives afterward (the same class of problem `resolveClickOrigin`
+		// already works around for `click`/`dblclick`) — plausibly breaking
+		// the `contextmenu` event that follows. Left (0) and middle (1,
+		// used for pan — see the README) still fall through unchanged.
+		if (evt.button === 2) return;
 		const target = evt.target as Element;
+		// Fold/cross-doc badges sit at the same node edge as the resize
+		// handle (which spans the node's full height, while a badge is only
+		// ~16px tall) and are themselves nested inside `.mm-node` — without
+		// this early return, a click a few px off the badge's vertical
+		// center hits the resize strip instead (an accidental width-resize
+		// drag), and even a clean hit on the badge falls through to the
+		// generic node-drag branch below, where a few px of hand jitter
+		// between pointerdown/up gets misread as a drag/reorder instead of
+		// a click, silently swallowing the fold-toggle click. Returning here
+		// makes both badges a dead zone for drag/resize, so a click there
+		// always reaches the plain `click` handler's badge logic.
+		if (target.closest(".mm-fold-badge") || target.closest(".mm-cross-doc-badge")) return;
 		if (target.closest(".mm-resize-handle")) {
 			const nodeG = target.closest(".mm-node") as SVGGElement | null;
 			const nodeId = nodeG?.dataset.nodeId;
@@ -1184,10 +1453,23 @@ export class SvgRenderer {
 			if (nodeG?.dataset.nodeId) this.onBadgeClick?.(nodeG.dataset.nodeId);
 			return;
 		}
+		const crossDocBadge = target.closest(".mm-cross-doc-badge");
+		if (crossDocBadge) {
+			const nodeG = crossDocBadge.closest(".mm-node") as SVGGElement | null;
+			if (nodeG?.dataset.nodeId) this.onCrossDocBadgeClick?.(nodeG.dataset.nodeId);
+			return;
+		}
 		const link = target.closest(".mm-node-link") as SVGElement | null;
 		if (link?.dataset.linkKind && link.dataset.linkTarget) {
-			this.onLinkClick?.(link.dataset.linkKind as LinkKind, link.dataset.linkTarget);
-			return;
+			if (evt.ctrlKey || evt.metaKey) {
+				this.onLinkClick?.(link.dataset.linkKind as LinkKind, link.dataset.linkTarget);
+				return;
+			}
+			// Plain click on link text: fall through to normal node
+			// selection instead of navigating — a node whose text is (or
+			// contains) a link was otherwise unselectable by clicking it,
+			// since every click on the label immediately navigated away.
+			// Mod+click is still the deliberate "open this link" gesture.
 		}
 		// Image thumbnail (R-image-display, decision A: click opens the image
 		// in a new tab, unlike a regular link click which navigates the
@@ -1218,9 +1500,27 @@ export class SvgRenderer {
 		this.onNodeClick?.(nodeId, evt);
 	};
 
-	/** Right-click (R-context-menu): not affected by the pointer-capture retargeting `resolveClickOrigin` works around above (a context-menu right-click doesn't participate in the drag pointer-capture flow), so a plain `evt.target.closest` hit-test — same as `onPointerDown` — is enough. */
+	/**
+	 * Right-click (R-context-menu): `onPointerDown` now bails out entirely
+	 * for button-2 pointerdowns (see there) before it ever calls
+	 * `capturePointer`, which should make the retargeting `resolveClickOrigin`
+	 * exists for a non-issue here. Still resolves via `resolveClickOrigin`
+	 * rather than raw `evt.target` anyway, matching `onClick`'s established
+	 * defensive pattern — cheap, and hedges against any other, unforeseen
+	 * cause of the same retargeting symptom. The resize handle and both
+	 * badges are excluded even though they're nested inside `.mm-node` (so a
+	 * bare `closest(".mm-node")` would otherwise match them too) — the
+	 * node's context menu is for the node itself, not its small edge
+	 * controls; right-clicking one of those is a no-op rather than falling
+	 * back to the OS/Electron native menu.
+	 */
 	private onContextMenu = (evt: MouseEvent): void => {
-		const target = evt.target as Element;
+		const target = this.resolveClickOrigin(evt);
+		if (!target) return;
+		if (target.closest(".mm-resize-handle") || target.closest(".mm-fold-badge") || target.closest(".mm-cross-doc-badge")) {
+			evt.preventDefault();
+			return;
+		}
 		const nodeG = target.closest(".mm-node") as SVGGElement | null;
 		const nodeId = nodeG?.dataset.nodeId;
 		if (!nodeId) return;

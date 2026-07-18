@@ -14,9 +14,19 @@ function hasMeta(meta: NodeMeta): boolean {
 	return meta.folded === true || meta.pos !== undefined || meta.width !== undefined;
 }
 
-/** True if a node currently has metadata worth persisting (R13 fold state, R12 manual position, drag-resized width). */
+/**
+ * True if a node currently has metadata worth persisting: R13 fold state,
+ * R12 manual position, drag-resized width, or — R1a item 2 — being the
+ * target of a same-doc relation (`isRelationTarget`, set by
+ * `model/relations.ts`'s `resolveRelations`). That last case has no
+ * fold/pos/width of its own, so `collectMeta`'s frontmatter entry for it
+ * ends up empty and gets filtered out by `hasMeta` — only the plain
+ * ` ^blockid` line suffix (written by `serializeNode` off this same
+ * predicate) survives, which is exactly what a relation reference needs to
+ * keep resolving across a round-trip.
+ */
 export function nodeHasPersistableMeta(node: MindNode): boolean {
-	return node.folded === true || node.manualPos !== undefined || node.manualWidth !== undefined;
+	return node.folded === true || node.manualPos !== undefined || node.manualWidth !== undefined || node.isRelationTarget === true;
 }
 
 const SYNTHETIC_ID_RE = /^n\d+$/;
@@ -53,6 +63,32 @@ export function ensurePersistentIds(root: MindNode, byId: Map<string, MindNode>,
 		for (const child of node.children) walk(child);
 	};
 	walk(root);
+}
+
+/**
+ * Forces `node` to have a persistent (non-synthetic) id *right now*, rather
+ * than waiting for the next `ensurePersistentIds` pass — used when
+ * authoring a same-doc relation (R1a item 6, `MindMapView.openLinkEditor`):
+ * the link text about to be written (`[[#^id]]`) must embed a stable id
+ * immediately. `ensurePersistentIds` only upgrades a synthetic id once it
+ * can see the node has persistable metadata (`isRelationTarget`), and at
+ * authoring time that flag isn't set yet — the link doesn't exist in any
+ * node's text until *after* this call's caller builds it. Minting here
+ * first, then embedding the final id in the link text, means a synthetic
+ * id is never written into markdown in the first place, so there's nothing
+ * for a later `ensurePersistentIds` pass to change out from under the
+ * reference. No-op (returns the existing id) if the node already has a
+ * persistent one.
+ */
+export function forcePersistentId(node: MindNode, byId: Map<string, MindNode>, mintBlockId: () => string = defaultMintBlockId): string {
+	if (!isSyntheticId(node.id)) return node.id;
+	const oldId = node.id;
+	let newId = mintBlockId();
+	while (byId.has(newId)) newId = mintBlockId();
+	byId.delete(oldId);
+	node.id = newId;
+	byId.set(newId, node);
+	return newId;
 }
 
 const MINDMAP_LINE_RE = /^mindmap:\s*$/;

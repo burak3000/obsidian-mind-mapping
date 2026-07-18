@@ -54,6 +54,18 @@ export class MindMapSettingsTab extends PluginSettingTab {
 			);
 
 		new Setting(containerEl)
+			.setName("Show relations")
+			.setDesc(
+				"Draw arrows for same-document relations (R1a: a node whose text links to another node in this map via a block reference). Off skips relation rendering entirely, not just hides it. Takes effect for maps opened after saving."
+			)
+			.addToggle((toggle) =>
+				toggle.setValue(this.plugin.settings.showRelations).onChange(async (value) => {
+					this.plugin.settings.showRelations = value;
+					await this.plugin.saveSettings();
+				})
+			);
+
+		new Setting(containerEl)
 			.setName("Animation cutoff")
 			.setDesc("Above this many visible nodes, fold/unfold position animations turn off and changes apply instantly (addendum §8 item 2, chosen default: 500). Takes effect for maps opened after saving.")
 			.addSlider((slider) =>

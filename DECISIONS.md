@@ -1,5 +1,140 @@
 # Architectural Decision Records
 
+## 2026-07-18 — Feature (M-R1a/M-R2): same-document relation arrows + cross-document badges
+
+**Scope:** `plans/PLAN-relations-and-ux-fixes.md`'s R1 ("same-document
+relations as a toggleable arrow") and R2 ("cross-document relation
+indicator"), milestones M-R1a then M-R2. Resolved decisions honored as
+given (not re-litigated): D1 storage = inline markdown same-file block
+links (`[[#^id]]`); D2 authoring = existing Ctrl/Cmd+K editor only, no
+drag-to-connect; D3 cross-doc display = badge + click (minimum); D5 arrow
+fidelity = cheap cubic-Bezier + arrowhead, not routed/animated.
+
+**Resolution & caching (new `src/model/relations.ts`):** `resolveRelations
+(model, fileBasename)` walks the tree, classifying each link a node's text
+already has (via `parseTextSegments`, reused from `model/links.ts`) into
+`"same-doc"` (a same-file block ref `[[#^id]]`/`[[<basename>#^id]]` whose
+id is in `model.byId`), `"cross-doc"` (any other wikilink or mdlink — a
+different note, a URL, a vault path), or dropped entirely (same-file but
+not a resolvable block ref: a dangling id, a plain heading link, or a
+self-link). The expensive part (`parseTextSegments`'s regex) is cached per
+node (`relationLinksCache`/`relationLinksCacheText`), invalidated by
+comparing against the node's current `text` — mirrors `getDisplayText`'s
+already-established fast path (skip entirely when there's no `[` at all).
+Classification against `model.byId` is *not* cached (a cheap Map lookup,
+and it must reflect the current tree, which can change independent of any
+one node's own text). Wired into `MindMapView.onChange`/`buildFromScratch`/
+external-reparse — i.e. mutation-commit granularity, never per keystroke
+(keystrokes inside the inline editor never touch the model at all, per
+`InlineEditor`'s existing design) — so this is an O(n) walk per edit, same
+class as `assignMissingColors`/`assignMissingSides`/`computeLayout`, which
+already run there every time.
+
+**Block-id forcing for round-trip (R1a item 2):** a same-doc relation
+target must keep a persistent (non-synthetic) `^id` across serialize even
+if it has no fold/pos/manual-width of its own. `resolveRelations` sets a
+new `MindNode.isRelationTarget` flag on every current relation's target
+(clearing it from every node first, since a node can stop being a target
+when the referencing link is edited/removed); `nodeHasPersistableMeta`
+(sync/metadata.ts) now also checks this flag, so `ensurePersistentIds`
+mints an id for it and `serializeNode` keeps writing the ` ^id` suffix —
+`collectMeta`'s frontmatter entry for such a node ends up all-`undefined`
+fields, which `hasMeta` already filters out, so no spurious empty
+frontmatter entry is written, only the plain line suffix. Confirmed by a
+parse→resolve→ensurePersistentIds→serialize→parse round-trip test
+(`test/relations.test.ts`) and, at scale, by `bench-relations.mjs`'s
+round-trip check on 200/500 injected relations.
+
+**Authoring-time id minting is a separate concern from the above:** if the
+link editor embedded a relation target's *current* (possibly still
+synthetic) id into the link text and only relied on the next
+`ensurePersistentIds` pass to mint a real one, that pass mints a *new*
+random id and repoints `byId` — but has no way to find and rewrite the
+link text elsewhere that already embedded the old synthetic id, silently
+breaking the just-authored relation. New `sync/metadata.ts`
+`forcePersistentId(node, byId, mintBlockId?)` avoids this by minting
+*before* the link text is built (`MindMapView.openLinkEditor`'s `onSave`,
+when `result.relationTargetNodeId` is set) — a synthetic id is never
+written into markdown in the first place, so there's nothing for a later
+pass to invalidate. Not routed through the undo/redo command stack (same
+as `ensurePersistentIds`'s own minting) — ids are internal identity, not
+user-visible state undo needs to restore.
+
+**Authoring UX (D2a, "implement minimally within the existing link-editor
+surface, stop and ask if this is a substantial fork"):** judged *not* a
+substantial fork — `LinkModal` gained one optional dropdown ("relation to
+a node in this map"), built from a document-order walk of `model.byId`
+excluding the node being edited (labels: link-stripped node text,
+truncated to 48 chars). Picking an option and saving skips the free-text
+Target field entirely (`LinkModalResult.relationTargetNodeId` short-
+circuits `buildLinkText`); the dropdown is omitted outright on a
+single-node map (nothing to relate to). Reopening the editor on a node
+whose sole link already resolves as a same-doc relation pre-selects that
+target and — since a bare `[[#^id]]` has no alias to show as a label —
+prefills the target *node's own text* instead of the raw `#^id` string.
+Not unit-tested directly: `LinkModal extends obsidian.Modal`, and the
+`obsidian` package is types-only (no runtime implementation, `main: ""`)
+— same untestable-without-a-hand-rolled-mock situation `MindMapView`
+itself is already in (see `ensureVisible.test.ts`'s own note on this);
+verified by code review + the manual dev-vault steps below instead.
+
+**Rendering — new `relationsG` layer + dirty-tracking/culling
+(SvgRenderer.ts):** a third `<g>` between `edgesG` and `nodesG` (arrows
+read as under node boxes, above branches). `SvgRenderer.update`/`mount`
+now take an optional `activeRelations: {sourceId,targetId}[]` — computed
+once by the caller (`resolveRelations`'s return value) rather than
+re-derived inside the renderer, so `update` stays a pure "draw what I'm
+given" step. `updateRelations()` mirrors `upsertEdge`'s exact discipline:
+rebuild each relation's path string (cheap — a single cubic Bezier, O(1)
+per relation, unlike `edgePath`'s 16-sample tapered-ribbon polygon) and
+only write the DOM `d` attribute if it actually changed; skip an endpoint
+that's folded away (O(1) lookup against a fold-visible-id snapshot taken
+once per `update()`, not a fold-tree re-walk) or fully outside the
+viewport + margin above the existing 300-node `CULL_THRESHOLD`. Called
+from `recull()` too (pan/zoom), exactly like edges already are — this is
+*not* "recomputing all arrows on pan/zoom" in the sense the plan warns
+against: it's the same membership-test-and-skip-if-unchanged pattern
+edges already pay on every pan/zoom frame above the culling threshold, and
+`bench-relations.mjs`'s pan-dispatch numbers (3.0ms/0.2ms at 200/500
+relations) confirm it stays cheap. `showRelations` (new setting, default
+on) is a constructor param, not a live per-`update()` check — when false,
+`activeRelations` is never even stored and `updateRelations` never runs,
+so "off" means zero relation work, not a hidden layer (same "baked in at
+construction, next reopen" convention `animationNodeThreshold`/
+`writeDebounceMs` already use). Visual: dashed, thin, `--text-faint`
+stroke — deliberately not branch-palette-colored, so a relation reads as a
+cross-link rather than a hierarchy edge (D5-adjacent design constraint the
+plan calls out explicitly).
+
+**R2 cross-doc badge:** a small per-node badge (↗ glyph), created lazily
+inside the existing per-node dirty-tracked `upsertNode` path (same cost
+profile as the R14 fold badge) whenever `node.resolvedRelations` has a
+`"cross-doc"` entry — reuses R1a's cached classification exactly as the
+plan specifies, no separate resolution pass. Click routes through a new
+`SvgRenderer.setCrossDocBadgeClickHandler` to `MindMapView
+.openCrossDocRelation`, which reuses the *existing* `openLink` method
+(wikilink → `openLinkText`; mdlink external URL → `window.open`; mdlink
+vault path → `openLinkText`) rather than reimplementing navigation. Not
+gated by `showRelations` (that setting is scoped to "the arrow"/relation
+layer per the plan's own wording; R2's badge has no toggle in the plan).
+A node with several cross-doc relations only opens the first on click — a
+target picker for that case is out of scope for D3's "minimum" design.
+
+**Benchmark checkpoint (mandatory before M-R2, see the dedicated entry in
+`benchmarks.md`):** `bench:m1`/`bench:m2` unchanged (no regression);
+new `bench:relations` (2,000/5,000-node fixtures, 200/500 relations
+injected) shows `resolveRelations` itself costs 1.0–1.4ms even at that
+relation count, Tab/rename stay comfortably under the 50ms budget, and
+pan-dispatch (culling-only, no re-resolution) is 0.2–3.0ms. No budget
+regression — proceeded to M-R2 per the checkpoint's own gate.
+
+**Not built (explicitly out of scope per resolved decisions, not a
+silent cut):** M-R1b drag-to-connect authoring gesture (D2, cut by the
+user); richer cross-doc display — hover-preview or ghost-stub nodes (D3);
+rich/animated/routed relation arrows (D5). All three have a clear
+re-open path (the classification/rendering plumbing underneath doesn't
+need to change) if requested later.
+
 ## 2026-07-18 — Fix (F2 follow-up): keep the completed node in view after commit, not just at create-time
 
 **Bug (reported after the initial F2 fix landed):** centering on a new node

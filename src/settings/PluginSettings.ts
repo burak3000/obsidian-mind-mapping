@@ -9,6 +9,8 @@ export interface MindMapSettings {
 	headingDepth: number;
 	/** Auto-balance layout mode (plan §9.3). */
 	layoutMode: LayoutMode;
+	/** R1a: show same-document relation arrows (default: on). Off means no relation resolution work happens in the renderer at all — see `SvgRenderer`'s `showRelations` constructor param. Takes effect for maps opened after saving, same as the other renderer-affecting settings here. */
+	showRelations: boolean;
 }
 
 export const DEFAULT_SETTINGS: MindMapSettings = {
@@ -16,4 +18,5 @@ export const DEFAULT_SETTINGS: MindMapSettings = {
 	animationNodeThreshold: 500,
 	headingDepth: 1,
 	layoutMode: "balanced",
+	showRelations: true,
 };

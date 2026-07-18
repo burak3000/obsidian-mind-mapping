@@ -6,7 +6,7 @@ export interface TextSegment {
 }
 
 // [[target]] or [[target|alias]], and [label](target) — the two link forms
-// callable from the Ctrl/Cmd+K editor (R5).
+// callable from the Ctrl/Cmd+Shift+L editor (R5).
 const LINK_RE = /\[\[([^\]]+)\]\]|\[([^\]]*)\]\(([^)]+)\)/g;
 
 /** Splits node text into plain-text and link runs for rendering as clickable spans. */
@@ -46,7 +46,7 @@ export function getDisplayText(text: string): string {
 		.join("");
 }
 
-/** True if node text has exactly one link occupying the whole label (the common case the Ctrl/Cmd+K editor produces) — used to prefill the link editor. */
+/** True if node text has exactly one link occupying the whole label (the common case the Ctrl/Cmd+Shift+L editor produces) — used to prefill the link editor. */
 export function getSoleLink(text: string): { kind: LinkKind; target: string; label: string } | null {
 	const segments = parseTextSegments(text).filter((s) => s.text.length > 0);
 	if (segments.length === 1 && segments[0].link) {
@@ -55,7 +55,7 @@ export function getSoleLink(text: string): { kind: LinkKind; target: string; lab
 	return null;
 }
 
-/** Builds node-text for a link (Ctrl/Cmd+K editor), matching the syntax `parseTextSegments` understands. */
+/** Builds node-text for a link (Ctrl/Cmd+Shift+L editor), matching the syntax `parseTextSegments` understands. */
 export function buildLinkText(result: { label: string; kind: LinkKind; target: string }): string {
 	if (result.kind === "wikilink") {
 		return result.label === result.target ? `[[${result.target}]]` : `[[${result.target}|${result.label}]]`;

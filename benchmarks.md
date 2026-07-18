@@ -364,3 +364,80 @@ anything) and real frame rate during a pan with images actually loaded —
 neither is measurable in jsdom; per CLAUDE.md, the authoritative check is
 a real Obsidian window with an image-heavy vault, watching Chrome
 DevTools' Performance panel during pan/zoom. Not done in this environment.
+
+## 2026-07-18 — M-R1a benchmark checkpoint (same-document relations)
+
+Mandatory checkpoint between M-R1a and M-R2 (CLAUDE.md rule 5 / plan's
+"Benchmark checkpoint"). Re-ran `npm run bench:m1` and `npm run bench:m2`
+unchanged (neither exercises `resolveRelations` — bench-m1 doesn't touch
+the renderer at all, bench-m2 calls `renderer.update(model)` with no
+relations, i.e. the empty-array fast path) as a baseline-regression check,
+then added `scripts/bench-relations.mjs` (`npm run bench:relations`) for
+the relations-specific cost the plan calls out: a **relations-stress**
+measurement on the 2,000- and 5,000-node fixtures with same-document
+relations injected at ~1-in-10 node density (200 and 500 relations
+respectively — "a few hundred", as suggested).
+
+**bench:m1** (unchanged, parse+layout only):
+100 nodes: 3.6ms · 500: 6.1ms · 2,000: 15.6ms · 5,000: 33.6ms — all `[OK]`
+against the 300ms/300ms/1000ms/2000ms open budgets, indistinguishable from
+prior runs (see the M1/M5 entries above). Confirms relation resolution
+added no cost to the parse/layout path itself (it isn't called there).
+
+**bench:m2** (unchanged, no relations exercised):
+| Fixture | Tab | Rename | Delete | Fold | Unfold |
+|---|---|---|---|---|---|
+| 100 nodes | 4.5ms | 2.9ms | 2.7ms | 2.5ms | 6.5ms |
+| 500 nodes | 4.2ms | 4.1ms | 3.5ms | 4.4ms | 7.7ms |
+| 2,000 nodes | 10.9ms | 11.5ms | 11.8ms | 8.8ms | 10.6ms |
+| 5,000 nodes (stress) | 29.4ms | 27.0ms | 23.7ms | 17.2ms | 25.2ms |
+
+All `[OK]` against the 50ms target / 100ms ceiling, within noise of the
+"Multiple selection" entry's baseline above (e.g. 2,000 nodes: 10.3–11.9ms
+then vs 8.8–11.8ms now) — no regression from anything R1a touched
+(`SvgRenderer`'s constructor/`update`/`recull` signatures changed, but the
+added relation work is gated behind `showRelations` and an empty
+`activeRelations` array costs one `Set` construction + a no-op loop).
+
+**bench:relations** (new — 2,000/5,000-node fixtures, 200/500 relations):
+```
+2000 nodes, 200 relations: open(parse+layout=18.9ms resolve=1.0ms mount=4.4ms
+  total=30.5ms OK) Tab=14.9ms OK rename(relation source)=13.6ms OK
+  pan-dispatch=3.0ms serialize=1.1ms
+5000 nodes, 500 relations: open(parse+layout=35.9ms resolve=1.4ms mount=2.6ms
+  total=41.0ms OK) Tab=28.0ms OK rename(relation source)=33.8ms OK
+  pan-dispatch=0.2ms serialize=1.7ms
+round-trip check (both sizes): serialized text contains all injected
+  relation links — true
+```
+
+Findings against the budgets and against the plan's own perf concerns:
+- **Open**: 30.5ms / 41.0ms total, nowhere near the 1000ms/2000ms budgets.
+  `resolveRelations` itself is 1.0–1.4ms even at 200–500 relations —
+  confirms the `getCachedLinks` fast-path/text-cache discipline (model's
+  `relationLinksCache`) keeps the full-tree walk cheap: the vast majority
+  of nodes bail out before any regex runs, so the walk's cost is bounded
+  by relation count, not node count.
+- **Tab/rename** (14.9–33.8ms, including a rename that specifically targets
+  a *relation-source* node, the worst case for `getCachedLinks`'s cache
+  miss): all comfortably under the 50ms target, and the delta versus the
+  no-relations bench-m2 numbers at the same sizes is small (a few ms) —
+  the dominant cost at these sizes is still `computeLayout`'s relayout,
+  not relation resolution.
+- **Pan-dispatch** (3.0ms at 2,000 nodes, 0.2ms at 5,000 — both above the
+  300-node culling threshold): confirms `updateRelations`'s membership-test
+  -and-skip-if-unchanged design (mirroring `upsertEdge`) means a pure
+  pan/zoom does not re-resolve or rebuild every relation's path string —
+  it stays bounded by however many relations currently pass the viewport
+  cull check, not the full `activeRelations` list, let alone node count.
+- **Round-trip**: every injected relation's `[[#^id]]` link survived
+  serialize at both sizes — confirms the `isRelationTarget` /
+  `nodeHasPersistableMeta` forcing (R1a item 2) holds up at scale, not just
+  in the small hand-written unit tests.
+
+**Verdict: no budget regression, checkpoint passed.** Proceeding to M-R2
+(cross-document relation indicator), which per the plan reuses this same
+`resolveRelations` classification and adds only a small per-visible-node
+badge element — no new global pass, so no separate benchmark script was
+added for it (covered by the renderer's existing dirty-tracked per-node
+path, same cost class as the R14 fold badge already is).

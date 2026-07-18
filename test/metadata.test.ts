@@ -5,7 +5,9 @@ import {
 	applyMindmapDataToTree,
 	extractMindmapData,
 	ensurePersistentIds,
+	forcePersistentId,
 	isSyntheticId,
+	nodeHasPersistableMeta,
 } from "../src/sync/metadata";
 
 describe("extractMindmapData", () => {
@@ -126,5 +128,59 @@ describe("ensurePersistentIds", () => {
 		ensurePersistentIds(model.root, model.byId, () => ids[call++]);
 		const [a, b] = model.root.children;
 		expect(new Set([a.id, b.id]).size).toBe(2);
+	});
+
+	it("mints a persistent id for a node whose only persistable metadata is being a relation target (R1a item 2)", () => {
+		const model = parseMindMap(["# Root", "## Branch A"].join("\n"), "fallback");
+		const branch = model.root.children[0];
+		expect(isSyntheticId(branch.id)).toBe(true);
+		branch.isRelationTarget = true;
+
+		ensurePersistentIds(model.root, model.byId, () => "reltarget1");
+		expect(branch.id).toBe("reltarget1");
+		expect(model.byId.get("reltarget1")).toBe(branch);
+	});
+});
+
+describe("nodeHasPersistableMeta (R1a item 2: relation-target extension)", () => {
+	it("is true for a node with no fold/pos/width but isRelationTarget set", () => {
+		const model = parseMindMap(["# Root", "## Branch A"].join("\n"), "fallback");
+		const branch = model.root.children[0];
+		expect(nodeHasPersistableMeta(branch)).toBe(false);
+		branch.isRelationTarget = true;
+		expect(nodeHasPersistableMeta(branch)).toBe(true);
+	});
+});
+
+describe("forcePersistentId (R1a item 6: relation authoring)", () => {
+	it("mints and returns a fresh persistent id for a node with a synthetic id, updating byId", () => {
+		const model = parseMindMap(["# Root", "## Branch A"].join("\n"), "fallback");
+		const branch = model.root.children[0];
+		const oldId = branch.id;
+		expect(isSyntheticId(oldId)).toBe(true);
+
+		const newId = forcePersistentId(branch, model.byId, () => "forcedid1");
+
+		expect(newId).toBe("forcedid1");
+		expect(branch.id).toBe("forcedid1");
+		expect(model.byId.get("forcedid1")).toBe(branch);
+		expect(model.byId.has(oldId)).toBe(false);
+	});
+
+	it("is a no-op returning the existing id when the node already has a non-synthetic id", () => {
+		const model = parseMindMap(["# Root", "## Branch A ^already1"].join("\n"), "fallback");
+		const branch = model.root.children[0];
+		const id = forcePersistentId(branch, model.byId, () => "shouldnotuse");
+		expect(id).toBe("already1");
+		expect(branch.id).toBe("already1");
+	});
+
+	it("retries on a minted id collision, same as ensurePersistentIds", () => {
+		const model = parseMindMap(["# Root", "## Branch A", "## Branch B ^taken"].join("\n"), "fallback");
+		const branch = model.root.children[0];
+		let call = 0;
+		const ids = ["taken", "unique2"];
+		const id = forcePersistentId(branch, model.byId, () => ids[call++]);
+		expect(id).toBe("unique2");
 	});
 });
