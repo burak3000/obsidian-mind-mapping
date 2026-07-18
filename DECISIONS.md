@@ -1,5 +1,25 @@
 # Architectural Decision Records
 
+## 2026-07-18 — Fix (F2 follow-up): keep the completed node in view after commit, not just at create-time
+
+**Bug (reported after the initial F2 fix landed):** centering on a new node
+worked at create-time but was lost on completing it — typing text and pressing
+Enter made the view appear to "jump back" and lose the node. **Root cause:** it
+is *not* a viewport reset (`SvgRenderer.mount`/`update` never touch the pan
+transform, which lives on the surviving `viewportG`). It is layout reflow: the
+new node is created *empty* (a tiny box), so the create-time minimal-pan brings
+that tiny box just inside the viewport margin; typing real, often multi-line
+text and committing then reflows the branch and pushes the now-larger node back
+out past the edge — and the original F2 fix only panned at create-time, so
+nothing followed the node to its final position.
+**Fix:** re-run the same minimal-pan `ensureNodeVisibleForEdit(nodeId)` in the
+inline editor's `onCommit` handler, after `commitRename` (so layout reflects the
+final text). No-op (D4) when the node is still comfortably visible, so an
+already-visible F2/dblclick edit still causes no view movement; only a node that
+reflow actually pushed off-screen gets re-panned. Verified via the existing
+`ensureVisible.test.ts` primitive coverage + manual dev-vault check
+(`MindMapView` itself isn't unit-instantiable — needs the Obsidian API).
+
 ## 2026-07-18 — Fix (F2): new node brought into view before its editor opens, via minimal-pan (D4)
 
 **Bug (plan item F2, `plans/PLAN-relations-and-ux-fixes.md`):** a newly

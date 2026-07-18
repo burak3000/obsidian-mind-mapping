@@ -220,6 +220,14 @@ export class MindMapView extends TextFileView implements ControllerListener {
 				this.inlineEditor = null;
 				this.controller?.commitRename(nodeId, text);
 				this.controller?.select(nodeId);
+				// Committing can grow the node (empty -> real, possibly
+				// multi-line text), reflowing the branch enough to push a node
+				// we panned to at create-time back out past the viewport margin
+				// — which reads as the view "jumping back" and losing the node
+				// on Enter. Re-run the minimal-pan ensure-visible now that
+				// layout reflects the final text so the completed node stays in
+				// view. No-op (D4) when it's still comfortably visible.
+				this.ensureNodeVisibleForEdit(nodeId);
 				this.contentEl.focus();
 			},
 			onCancel: () => {

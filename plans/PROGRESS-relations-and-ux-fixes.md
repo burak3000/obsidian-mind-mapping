@@ -13,8 +13,8 @@ _Created 2026-07-18. Last updated: 2026-07-18._
 
 | Milestone | Item | Status | Blocked on |
 |---|---|---|---|
-| M-F1 | Color invariant fix (pasted/moved branch adopts target color) | **Done** — reviewed, uncommitted (awaiting user review/commit) | — |
-| M-F2 | New node brought into view before editor opens | **Done** — reviewed, uncommitted (awaiting user review/commit) | — |
+| M-F1 | Color invariant fix (pasted/moved branch adopts target color) | **Done** — committed `cc1bf66` | — |
+| M-F2 | New node brought into view before editor opens | **Done** — committed `cc1bf66` | — |
 | M-R1a | Same-doc relation model + rendering + toggle | **Not started** | — (D1/D2 resolved; review gate) |
 | M-R1b | Drag-to-connect authoring gesture (optional) | **Cut for now** | D2 → chose Ctrl/Cmd+K only |
 | M-R2 | Cross-document relation indicator | **Not started** | — (D3 default) |
