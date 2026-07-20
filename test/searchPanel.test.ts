@@ -1,5 +1,5 @@
 // @vitest-environment jsdom
-import { describe, expect, it, vi } from "vitest";
+import { afterEach, describe, expect, it, vi } from "vitest";
 import { SearchPanel } from "../src/view/SearchPanel";
 import { SearchOutcome } from "../src/model/search";
 
@@ -15,55 +15,60 @@ const OUTCOME: SearchOutcome = {
 	totalMatches: 2,
 };
 
+let attachedHosts: HTMLElement[] = [];
+afterEach(() => {
+	for (const host of attachedHosts) host.remove();
+	attachedHosts = [];
+});
+
+/** Builds a SearchPanel with vi.fn() spies for onSelect/onClose (override via opts) and `onQuery` defaulting to always return OUTCOME. `attach: true` appends the host to document.body — needed for activeElement/focus tests. */
+function makePanel(opts: { onQuery?: () => SearchOutcome; attach?: boolean } = {}) {
+	const host = document.createElement("div");
+	if (opts.attach) {
+		document.body.appendChild(host);
+		attachedHosts.push(host);
+	}
+	const onSelect = vi.fn();
+	const onClose = vi.fn();
+	const panel = new SearchPanel(host, { onQuery: opts.onQuery ?? (() => OUTCOME), onSelect, onClose });
+	const input = host.querySelector(".mm-search-input") as HTMLInputElement;
+	return { host, panel, input, onSelect, onClose };
+}
+
+function type(input: HTMLInputElement, value = ""): void {
+	input.value = value;
+	input.dispatchEvent(new Event("input"));
+}
+
 describe("SearchPanel", () => {
 	it("focuses the input on creation and runs a query on every keystroke", () => {
-		const host = document.createElement("div");
-		document.body.appendChild(host);
 		const onQuery = vi.fn().mockReturnValue(OUTCOME);
-		new SearchPanel(host, { onQuery, onSelect: () => {}, onClose: () => {} });
-
-		const input = host.querySelector(".mm-search-input") as HTMLInputElement;
+		const { host, input } = makePanel({ onQuery, attach: true });
 		expect(document.activeElement).toBe(input);
 
-		input.value = "alp";
-		input.dispatchEvent(new Event("input"));
+		type(input, "alp");
 		expect(onQuery).toHaveBeenCalledWith("alp");
 		expect(host.querySelectorAll(".mm-search-result").length).toBe(2);
 		expect(host.querySelector(".mm-search-result")!.textContent).toBe("Alpha");
-
-		document.body.removeChild(host);
 	});
 
 	it("clicking a result calls onSelect with that node's id", () => {
-		const host = document.createElement("div");
-		const onSelect = vi.fn();
-		new SearchPanel(host, { onQuery: () => OUTCOME, onSelect, onClose: () => {} });
-
-		const input = host.querySelector(".mm-search-input") as HTMLInputElement;
-		input.dispatchEvent(new Event("input"));
-
-		const items = host.querySelectorAll(".mm-search-result");
-		items[1].dispatchEvent(new MouseEvent("click", { bubbles: true }));
+		const { host, input, onSelect } = makePanel();
+		type(input);
+		host.querySelectorAll(".mm-search-result")[1].dispatchEvent(new MouseEvent("click", { bubbles: true }));
 		expect(onSelect).toHaveBeenCalledWith("n2");
 	});
 
 	it("Enter selects the first result by default", () => {
-		const host = document.createElement("div");
-		const onSelect = vi.fn();
-		new SearchPanel(host, { onQuery: () => OUTCOME, onSelect, onClose: () => {} });
-		const input = host.querySelector(".mm-search-input") as HTMLInputElement;
-		input.dispatchEvent(new Event("input"));
-
+		const { input, onSelect } = makePanel();
+		type(input);
 		fireKey(input, "Enter");
 		expect(onSelect).toHaveBeenCalledWith("n1");
 	});
 
 	it("ArrowDown/ArrowUp move the highlighted result, and Enter selects it", () => {
-		const host = document.createElement("div");
-		const onSelect = vi.fn();
-		new SearchPanel(host, { onQuery: () => OUTCOME, onSelect, onClose: () => {} });
-		const input = host.querySelector(".mm-search-input") as HTMLInputElement;
-		input.dispatchEvent(new Event("input"));
+		const { host, input, onSelect } = makePanel();
+		type(input);
 
 		fireKey(input, "ArrowDown"); // 0 -> 1
 		expect(host.querySelectorAll(".mm-search-result")[1].classList.contains("mm-search-result-active")).toBe(true);
@@ -73,70 +78,47 @@ describe("SearchPanel", () => {
 	});
 
 	it("ArrowDown wraps from the last result back to the first", () => {
-		const host = document.createElement("div");
-		new SearchPanel(host, { onQuery: () => OUTCOME, onSelect: () => {}, onClose: () => {} });
-		const input = host.querySelector(".mm-search-input") as HTMLInputElement;
-		input.dispatchEvent(new Event("input"));
-
+		const { host, input } = makePanel();
+		type(input);
 		fireKey(input, "ArrowDown"); // 0 -> 1
 		fireKey(input, "ArrowDown"); // 1 -> wraps to 0
 		expect(host.querySelectorAll(".mm-search-result")[0].classList.contains("mm-search-result-active")).toBe(true);
 	});
 
 	it("Escape calls onClose", () => {
-		const host = document.createElement("div");
-		const onClose = vi.fn();
-		new SearchPanel(host, { onQuery: () => ({ results: [], totalMatches: 0 }), onSelect: () => {}, onClose });
-		const input = host.querySelector(".mm-search-input") as HTMLInputElement;
+		const { input, onClose } = makePanel({ onQuery: () => ({ results: [], totalMatches: 0 }) });
 		fireKey(input, "Escape");
 		expect(onClose).toHaveBeenCalled();
 	});
 
 	it("shows a count of total matches even when the result list is capped", () => {
-		const host = document.createElement("div");
-		new SearchPanel(host, {
-			onQuery: () => ({ results: [{ id: "n1", text: "x" }], totalMatches: 5 }),
-			onSelect: () => {},
-			onClose: () => {},
-		});
-		const input = host.querySelector(".mm-search-input") as HTMLInputElement;
-		input.value = "x";
-		input.dispatchEvent(new Event("input"));
+		const { host, input } = makePanel({ onQuery: () => ({ results: [{ id: "n1", text: "x" }], totalMatches: 5 }) });
+		type(input, "x");
 		expect(host.querySelector(".mm-search-count")!.textContent).toContain("5 matches");
 	});
 
 	it("shows nothing for an empty query and 'No matches' for a query with zero hits", () => {
-		const host = document.createElement("div");
-		let outcome: SearchOutcome = { results: [], totalMatches: 0 };
-		new SearchPanel(host, { onQuery: () => outcome, onSelect: () => {}, onClose: () => {} });
-		const input = host.querySelector(".mm-search-input") as HTMLInputElement;
+		const { host, input } = makePanel({ onQuery: () => ({ results: [], totalMatches: 0 }) });
 
-		input.value = "";
-		input.dispatchEvent(new Event("input"));
+		type(input, "");
 		expect(host.querySelector(".mm-search-count")!.textContent).toBe("");
 
-		input.value = "nothing matches this";
-		input.dispatchEvent(new Event("input"));
+		type(input, "nothing matches this");
 		expect(host.querySelector(".mm-search-count")!.textContent).toBe("No matches");
 	});
 
 	it("destroy() removes the panel from the DOM", () => {
-		const host = document.createElement("div");
-		const panel = new SearchPanel(host, { onQuery: () => OUTCOME, onSelect: () => {}, onClose: () => {} });
+		const { host, panel } = makePanel();
 		panel.destroy();
 		expect(host.querySelector(".mm-search-panel")).toBeNull();
 	});
 
 	it("focus() re-focuses the input without rebuilding the panel", () => {
-		const host = document.createElement("div");
-		document.body.appendChild(host);
-		const panel = new SearchPanel(host, { onQuery: () => OUTCOME, onSelect: () => {}, onClose: () => {} });
-		const input = host.querySelector(".mm-search-input") as HTMLInputElement;
+		const { input, panel } = makePanel({ attach: true });
 		(document.activeElement as HTMLElement).blur();
 		expect(document.activeElement).not.toBe(input);
 
 		panel.focus();
 		expect(document.activeElement).toBe(input);
-		document.body.removeChild(host);
 	});
 });

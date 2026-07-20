@@ -10,6 +10,11 @@ import {
 	nodeHasPersistableMeta,
 } from "../src/sync/metadata";
 
+function makeBranch(md = ["# Root", "## Branch A"].join("\n")) {
+	const model = parseMindMap(md, "fallback");
+	return { model, branch: model.root.children[0] };
+}
+
 describe("extractMindmapData", () => {
 	it("returns empty nodes when there is no frontmatter", () => {
 		expect(extractMindmapData(null)).toEqual({ nodes: {} });
@@ -25,7 +30,17 @@ describe("extractMindmapData", () => {
 		expect(extractMindmapData(fm)).toEqual({ nodes: { abc123: { folded: true }, def456: { folded: true } } });
 	});
 
-	it("ignores entries without folded:true", () => {
+	it.each([
+		["folded: true", { folded: true }],
+		["externalRef: true", { externalRef: true }], // R4 durability fix
+		["badge: done", { badge: "done" }], // plans/09
+		["badge: from-the-future", { badge: "from-the-future" }], // forward-compat: unrecognized value captured, not dropped
+	])("parses a %s entry", (entry, expected) => {
+		const fm = ["---", "mindmap:", "  nodes:", `    ^abc123: { ${entry} }`, "---"].join("\n");
+		expect(extractMindmapData(fm)).toEqual({ nodes: { abc123: expected } });
+	});
+
+	it("ignores an entry with no recognized keys (e.g. missing folded/externalRef)", () => {
 		const fm = ["---", "mindmap:", "  nodes:", "    ^abc123: { }", "---"].join("\n");
 		expect(extractMindmapData(fm)).toEqual({ nodes: {} });
 	});
@@ -34,48 +49,28 @@ describe("extractMindmapData", () => {
 		const fm = ["---", "mindmap:", "  nodes:", "    ^abc123: { folded: true }", "tags: [x]", "---"].join("\n");
 		expect(extractMindmapData(fm)).toEqual({ nodes: { abc123: { folded: true } } });
 	});
-
-	it("parses externalRef:true node entries (R4 durability fix)", () => {
-		const fm = ["---", "mindmap:", "  nodes:", "    ^abc123: { externalRef: true }", "---"].join("\n");
-		expect(extractMindmapData(fm)).toEqual({ nodes: { abc123: { externalRef: true } } });
-	});
-
-	it("ignores entries without externalRef:true", () => {
-		const fm = ["---", "mindmap:", "  nodes:", "    ^abc123: { }", "---"].join("\n");
-		expect(extractMindmapData(fm)).toEqual({ nodes: {} });
-	});
-
-	it("parses badge node entries (plans/09)", () => {
-		const fm = ["---", "mindmap:", "  nodes:", "    ^abc123: { badge: done }", "---"].join("\n");
-		expect(extractMindmapData(fm)).toEqual({ nodes: { abc123: { badge: "done" } } });
-	});
-
-	it("captures an unrecognized badge value instead of dropping it (forward-compat with a newer plugin version)", () => {
-		const fm = ["---", "mindmap:", "  nodes:", "    ^abc123: { badge: from-the-future }", "---"].join("\n");
-		expect(extractMindmapData(fm)).toEqual({ nodes: { abc123: { badge: "from-the-future" } } });
-	});
 });
 
 describe("applyMindmapDataToTree", () => {
 	it("sets folded=true on matching nodes by block id", () => {
-		const model = parseMindMap(["# Root", "## Branch A ^abc123"].join("\n"), "fallback");
+		const { model } = makeBranch(["# Root", "## Branch A ^abc123"].join("\n"));
 		applyMindmapDataToTree(model.byId, { nodes: { abc123: { folded: true } } });
 		expect(model.root.children[0].folded).toBe(true);
 	});
 
 	it("ignores ids that don't match any node", () => {
-		const model = parseMindMap(["# Root", "## Branch A"].join("\n"), "fallback");
+		const { model } = makeBranch();
 		expect(() => applyMindmapDataToTree(model.byId, { nodes: { nonexistent: { folded: true } } })).not.toThrow();
 	});
 
 	it("sets externalRelationTarget=true on matching nodes by block id (R4 durability fix)", () => {
-		const model = parseMindMap(["# Root", "## Branch A ^abc123"].join("\n"), "fallback");
+		const { model } = makeBranch(["# Root", "## Branch A ^abc123"].join("\n"));
 		applyMindmapDataToTree(model.byId, { nodes: { abc123: { externalRef: true } } });
 		expect(model.root.children[0].externalRelationTarget).toBe(true);
 	});
 
 	it("sets statusBadge on matching nodes by block id (plans/09)", () => {
-		const model = parseMindMap(["# Root", "## Branch A ^abc123"].join("\n"), "fallback");
+		const { model } = makeBranch(["# Root", "## Branch A ^abc123"].join("\n"));
 		applyMindmapDataToTree(model.byId, { nodes: { abc123: { badge: "blocked" } } });
 		expect(model.root.children[0].statusBadge).toBe("blocked");
 	});
@@ -105,27 +100,23 @@ describe("applyMindmapData (round-trip on frontmatter text)", () => {
 
 	it("removes the mindmap block entirely when metadata becomes empty, preserving other keys", () => {
 		const existing = ["---", "tags: [foo]", "mindmap:", "  nodes:", "    ^abc123: { folded: true }", "---"].join("\n");
-		const result = applyMindmapData(existing, { nodes: {} });
-		expect(result).toBe(["---", "tags: [foo]", "---"].join("\n"));
+		expect(applyMindmapData(existing, { nodes: {} })).toBe(["---", "tags: [foo]", "---"].join("\n"));
 	});
 
 	it("drops the whole frontmatter block if nothing remains after removing our subtree", () => {
 		const existing = ["---", "mindmap:", "  nodes:", "    ^abc123: { folded: true }", "---"].join("\n");
-		const result = applyMindmapData(existing, { nodes: {} });
-		expect(result).toBeNull();
+		expect(applyMindmapData(existing, { nodes: {} })).toBeNull();
 	});
 
 	it("round-trips through extract -> apply -> extract without drift", () => {
 		const original = { nodes: { a1: { folded: true }, b2: { folded: true } } };
-		const text = applyMindmapData(null, original);
-		expect(extractMindmapData(text)).toEqual(original);
+		expect(extractMindmapData(applyMindmapData(null, original))).toEqual(original);
 	});
 });
 
 describe("externalRelationTarget durability (R4 fix, sync/foreignRelation.ts's commitForeignRelationTarget)", () => {
 	it("nodeHasPersistableMeta is true purely from externalRelationTarget, independent of fold/pos/width", () => {
-		const model = parseMindMap(["# Root", "## Branch A"].join("\n"), "fallback");
-		const branch = model.root.children[0];
+		const { branch } = makeBranch();
 		expect(nodeHasPersistableMeta(branch)).toBe(false);
 		branch.externalRelationTarget = true;
 		expect(nodeHasPersistableMeta(branch)).toBe(true);
@@ -139,8 +130,7 @@ describe("externalRelationTarget durability (R4 fix, sync/foreignRelation.ts's c
 		// commitForeignRelationTarget does), serialize, then parse the
 		// serialized output *again* as if it were a brand-new session with no
 		// memory of the original in-session state.
-		const model = parseMindMap(["# Root", "## Branch A"].join("\n"), "fallback");
-		const branch = model.root.children[0];
+		const { model, branch } = makeBranch();
 		expect(isSyntheticId(branch.id)).toBe(true);
 		branch.externalRelationTarget = true;
 
@@ -152,11 +142,8 @@ describe("externalRelationTarget durability (R4 fix, sync/foreignRelation.ts's c
 		const frontmatter = applyMindmapData(null, { nodes: meta });
 		expect(frontmatter).toContain("externalRef: true");
 
-		// Fresh, independent parse of the serialized text (no shared state
-		// with `model`/`branch` above).
-		const serializedText = [frontmatter, "# Root", "## Branch A ^extref1"].join("\n");
-		const reparsed = parseMindMap(serializedText, "fallback");
-		const reparsedBranch = reparsed.root.children[0];
+		// Fresh, independent parse of the serialized text (no shared state with `model`/`branch` above).
+		const reparsedBranch = parseMindMap([frontmatter, "# Root", "## Branch A ^extref1"].join("\n"), "fallback").root.children[0];
 
 		expect(reparsedBranch.id).toBe("extref1");
 		expect(reparsedBranch.externalRelationTarget).toBe(true);
@@ -169,8 +156,7 @@ describe("externalRelationTarget durability (R4 fix, sync/foreignRelation.ts's c
 
 describe("ensurePersistentIds", () => {
 	it("mints a persistent id for a folded node with a synthetic id", () => {
-		const model = parseMindMap(["# Root", "## Branch A"].join("\n"), "fallback");
-		const branch = model.root.children[0];
+		const { model, branch } = makeBranch();
 		expect(isSyntheticId(branch.id)).toBe(true);
 		branch.folded = true;
 		branch.children.push({ id: "child-synthetic", text: "x", children: [], parent: branch, depth: 2, folded: false, subtreeCount: 0 });
@@ -181,23 +167,21 @@ describe("ensurePersistentIds", () => {
 	});
 
 	it("does not touch a node that already has a non-synthetic id", () => {
-		const model = parseMindMap(["# Root", "## Branch A ^already1"].join("\n"), "fallback");
-		const branch = model.root.children[0];
+		const { model, branch } = makeBranch(["# Root", "## Branch A ^already1"].join("\n"));
 		branch.folded = true;
 		ensurePersistentIds(model.root, model.byId, () => "shouldnotuse");
 		expect(branch.id).toBe("already1");
 	});
 
 	it("leaves nodes without metadata alone", () => {
-		const model = parseMindMap(["# Root", "## Branch A"].join("\n"), "fallback");
-		const branch = model.root.children[0];
+		const { model, branch } = makeBranch();
 		const originalId = branch.id;
 		ensurePersistentIds(model.root, model.byId, () => "shouldnotuse");
 		expect(branch.id).toBe(originalId);
 	});
 
 	it("avoids id collisions by retrying the generator", () => {
-		const model = parseMindMap(["# Root", "## Branch A", "## Branch B"].join("\n"), "fallback");
+		const { model } = makeBranch(["# Root", "## Branch A", "## Branch B"].join("\n"));
 		model.root.children[0].folded = true;
 		model.root.children[1].folded = true;
 		let call = 0;
@@ -208,8 +192,7 @@ describe("ensurePersistentIds", () => {
 	});
 
 	it("mints a persistent id for a node whose only persistable metadata is being a relation target (R1a item 2)", () => {
-		const model = parseMindMap(["# Root", "## Branch A"].join("\n"), "fallback");
-		const branch = model.root.children[0];
+		const { model, branch } = makeBranch();
 		expect(isSyntheticId(branch.id)).toBe(true);
 		branch.isRelationTarget = true;
 
@@ -220,27 +203,20 @@ describe("ensurePersistentIds", () => {
 });
 
 describe("nodeHasPersistableMeta (R1a item 2: relation-target extension)", () => {
-	it("is true for a node with no fold/pos/width but isRelationTarget set", () => {
-		const model = parseMindMap(["# Root", "## Branch A"].join("\n"), "fallback");
-		const branch = model.root.children[0];
+	it.each([
+		["isRelationTarget", "isRelationTarget" as const, true],
+		["statusBadge", "statusBadge" as const, "ready"], // plans/09
+	])("is true purely from %s, independent of fold/pos/width", (_label, field, value) => {
+		const { branch } = makeBranch();
 		expect(nodeHasPersistableMeta(branch)).toBe(false);
-		branch.isRelationTarget = true;
-		expect(nodeHasPersistableMeta(branch)).toBe(true);
-	});
-
-	it("is true purely from statusBadge, independent of fold/pos/width (plans/09)", () => {
-		const model = parseMindMap(["# Root", "## Branch A"].join("\n"), "fallback");
-		const branch = model.root.children[0];
-		expect(nodeHasPersistableMeta(branch)).toBe(false);
-		branch.statusBadge = "ready";
+		(branch as unknown as Record<string, unknown>)[field] = value;
 		expect(nodeHasPersistableMeta(branch)).toBe(true);
 	});
 });
 
 describe("forcePersistentId (R1a item 6: relation authoring)", () => {
 	it("mints and returns a fresh persistent id for a node with a synthetic id, updating byId", () => {
-		const model = parseMindMap(["# Root", "## Branch A"].join("\n"), "fallback");
-		const branch = model.root.children[0];
+		const { model, branch } = makeBranch();
 		const oldId = branch.id;
 		expect(isSyntheticId(oldId)).toBe(true);
 
@@ -253,19 +229,16 @@ describe("forcePersistentId (R1a item 6: relation authoring)", () => {
 	});
 
 	it("is a no-op returning the existing id when the node already has a non-synthetic id", () => {
-		const model = parseMindMap(["# Root", "## Branch A ^already1"].join("\n"), "fallback");
-		const branch = model.root.children[0];
+		const { branch, model } = makeBranch(["# Root", "## Branch A ^already1"].join("\n"));
 		const id = forcePersistentId(branch, model.byId, () => "shouldnotuse");
 		expect(id).toBe("already1");
 		expect(branch.id).toBe("already1");
 	});
 
 	it("retries on a minted id collision, same as ensurePersistentIds", () => {
-		const model = parseMindMap(["# Root", "## Branch A", "## Branch B ^taken"].join("\n"), "fallback");
-		const branch = model.root.children[0];
+		const { model, branch } = makeBranch(["# Root", "## Branch A", "## Branch B ^taken"].join("\n"));
 		let call = 0;
 		const ids = ["taken", "unique2"];
-		const id = forcePersistentId(branch, model.byId, () => ids[call++]);
-		expect(id).toBe("unique2");
+		expect(forcePersistentId(branch, model.byId, () => ids[call++])).toBe("unique2");
 	});
 });

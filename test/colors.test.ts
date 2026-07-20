@@ -1,6 +1,7 @@
 import { describe, expect, it } from "vitest";
 import { parseMindMap } from "../src/sync/parser";
 import { assignMissingColors, resolveNodeColorKey, strokeWidthForDepth } from "../src/render/colors";
+import { makeNode } from "./helpers/model";
 
 describe("assignMissingColors", () => {
 	it("gives every first-level branch a distinct colorKey", () => {
@@ -24,15 +25,7 @@ describe("assignMissingColors", () => {
 		const aColor = model.root.children[0].colorKey;
 		const bColor = model.root.children[1].colorKey;
 
-		model.root.children.push({
-			id: "new",
-			text: "C",
-			children: [],
-			parent: model.root,
-			depth: 1,
-			folded: false,
-			subtreeCount: 0,
-		});
+		model.root.children.push(makeNode({ id: "new", text: "C", parent: model.root }));
 		assignMissingColors(model.root);
 
 		expect(model.root.children[0].colorKey).toBe(aColor);

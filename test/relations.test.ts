@@ -21,12 +21,16 @@ function findByText(root: MindNode, text: string): MindNode {
 	return found;
 }
 
+/** parseMindMap + resolveRelations in one call, for the common case with no mutation in between. */
+function parseAndResolve(md: string, filename = "fallback") {
+	const model = parseMindMap(md, filename);
+	const active = resolveRelations(model, filename);
+	return { model, active };
+}
+
 describe("resolveRelations: classification", () => {
 	it("resolves a bare same-file block ref [[#^id]] to the matching node as a same-doc relation", () => {
-		const md = ["# Root", "## Source [[#^tgt1]]", "## Target ^tgt1"].join("\n");
-		const model = parseMindMap(md, "fallback");
-		const active = resolveRelations(model, "fallback");
-
+		const { model, active } = parseAndResolve(["# Root", "## Source [[#^tgt1]]", "## Target ^tgt1"].join("\n"));
 		const source = findByText(model.root, "Source [[#^tgt1]]");
 		const target = findByText(model.root, "Target");
 		expect(source.resolvedRelations).toEqual([{ kind: "same-doc", linkKind: "wikilink", rawTarget: "#^tgt1", targetId: target.id }]);
@@ -34,82 +38,57 @@ describe("resolveRelations: classification", () => {
 	});
 
 	it("resolves [[<basename>#^id]] (case-insensitive) to the matching node when it names the current file", () => {
-		const md = ["# Root", "## Source [[MyFile#^tgt1]]", "## Target ^tgt1"].join("\n");
-		const model = parseMindMap(md, "fallback");
-		resolveRelations(model, "myfile");
-
-		const source = findByText(model.root, "Source [[MyFile#^tgt1]]");
-		expect(source.resolvedRelations?.[0].kind).toBe("same-doc");
+		const { model } = parseAndResolve(["# Root", "## Source [[MyFile#^tgt1]]", "## Target ^tgt1"].join("\n"), "myfile");
+		expect(findByText(model.root, "Source [[MyFile#^tgt1]]").resolvedRelations?.[0].kind).toBe("same-doc");
 	});
 
 	it("does not resolve [[<basename>#^id]] when the basename doesn't match the current file", () => {
-		const md = ["# Root", "## Source [[OtherFile#^tgt1]]", "## Target ^tgt1"].join("\n");
-		const model = parseMindMap(md, "fallback");
-		resolveRelations(model, "myfile");
-
-		const source = findByText(model.root, "Source [[OtherFile#^tgt1]]");
-		expect(source.resolvedRelations).toEqual([{ kind: "cross-doc", linkKind: "wikilink", rawTarget: "OtherFile#^tgt1" }]);
+		const { model } = parseAndResolve(["# Root", "## Source [[OtherFile#^tgt1]]", "## Target ^tgt1"].join("\n"), "myfile");
+		expect(findByText(model.root, "Source [[OtherFile#^tgt1]]").resolvedRelations).toEqual([{ kind: "cross-doc", linkKind: "wikilink", rawTarget: "OtherFile#^tgt1" }]);
 	});
 
 	it("ignores a dangling same-file block ref instead of treating it as cross-doc or crashing", () => {
 		const md = ["# Root", "## Source [[#^nonexistent]]"].join("\n");
 		const model = parseMindMap(md, "fallback");
 		expect(() => resolveRelations(model, "fallback")).not.toThrow();
-
-		const source = findByText(model.root, "Source [[#^nonexistent]]");
-		expect(source.resolvedRelations).toEqual([]);
+		expect(findByText(model.root, "Source [[#^nonexistent]]").resolvedRelations).toEqual([]);
 	});
 
-	it("ignores a same-file non-block link (plain heading link) — not a relation, not a cross-doc badge", () => {
-		const md = ["# Root", "## Source [[#Some Heading]]"].join("\n");
-		const model = parseMindMap(md, "fallback");
-		resolveRelations(model, "fallback");
-
-		const source = findByText(model.root, "Source [[#Some Heading]]");
-		expect(source.resolvedRelations).toEqual([]);
+	it.each([
+		["a same-file non-block link (plain heading link) — not a relation, not a cross-doc badge", "## Source [[#Some Heading]]", "Source [[#Some Heading]]"],
+		["a node with no link at all", "## Plain node", "Plain node"],
+	])("%s resolves to an empty relation list", (_label, line, nodeText) => {
+		const { model } = parseAndResolve(["# Root", line].join("\n"));
+		expect(findByText(model.root, nodeText).resolvedRelations).toEqual([]);
 	});
 
 	it("ignores a self-referencing block link rather than drawing a self-loop", () => {
-		const md = ["# Root", "## Self ^selfid"].join("\n");
-		const model = parseMindMap(md, "fallback");
+		const model = parseMindMap(["# Root", "## Self ^selfid"].join("\n"), "fallback");
 		const node = findByText(model.root, "Self");
 		node.text = `Self [[#^${node.id}]]`;
 		resolveRelations(model, "fallback");
 		expect(node.resolvedRelations).toEqual([]);
 	});
 
-	it("classifies a wikilink to a different note as cross-doc", () => {
-		const md = ["# Root", "## Source [[Other Note]]"].join("\n");
-		const model = parseMindMap(md, "fallback");
-		resolveRelations(model, "fallback");
-		const source = findByText(model.root, "Source [[Other Note]]");
-		expect(source.resolvedRelations).toEqual([{ kind: "cross-doc", linkKind: "wikilink", rawTarget: "Other Note" }]);
-	});
-
-	it("classifies an mdlink (URL or vault path) as cross-doc", () => {
-		const md = ["# Root", "## Source [ref](https://example.com)"].join("\n");
-		const model = parseMindMap(md, "fallback");
-		resolveRelations(model, "fallback");
-		const source = findByText(model.root, "Source [ref](https://example.com)");
-		expect(source.resolvedRelations).toEqual([{ kind: "cross-doc", linkKind: "mdlink", rawTarget: "https://example.com" }]);
-	});
-
-	it("a node with no link at all gets an empty relation list", () => {
-		const md = ["# Root", "## Plain node"].join("\n");
-		const model = parseMindMap(md, "fallback");
-		resolveRelations(model, "fallback");
-		expect(findByText(model.root, "Plain node").resolvedRelations).toEqual([]);
+	it.each([
+		["a wikilink to a different note", "## Source [[Other Note]]", "Source [[Other Note]]", { kind: "cross-doc", linkKind: "wikilink", rawTarget: "Other Note" }],
+		[
+			"an mdlink (URL or vault path)",
+			"## Source [ref](https://example.com)",
+			"Source [ref](https://example.com)",
+			{ kind: "cross-doc", linkKind: "mdlink", rawTarget: "https://example.com" },
+		],
+	])("classifies %s as cross-doc", (_label, line, nodeText, expected) => {
+		const { model } = parseAndResolve(["# Root", line].join("\n"));
+		expect(findByText(model.root, nodeText).resolvedRelations).toEqual([expected]);
 	});
 
 	it("re-resolving after a target's block id changes correctly drops the stale relation and marks the new target instead", () => {
-		const md = ["# Root", "## Source [[#^t1]]", "## Target ^t1"].join("\n");
-		const model = parseMindMap(md, "fallback");
-		resolveRelations(model, "fallback");
+		const { model } = parseAndResolve(["# Root", "## Source [[#^t1]]", "## Target ^t1"].join("\n"));
 		const target = findByText(model.root, "Target");
 		expect(target.isRelationTarget).toBe(true);
 
-		const source = findByText(model.root, "Source [[#^t1]]");
-		source.text = "Source, no relation anymore";
+		findByText(model.root, "Source [[#^t1]]").text = "Source, no relation anymore";
 		resolveRelations(model, "fallback");
 		expect(target.isRelationTarget).toBe(false);
 	});
@@ -117,17 +96,12 @@ describe("resolveRelations: classification", () => {
 
 describe("resolveRelations: block-id forcing for round-trip (R1a item 2)", () => {
 	it("marks a relation's target as needing a persistent id even though it has no fold/pos/width of its own", () => {
-		const md = ["# Root", "## Source [[#^t1]]", "## Target ^t1"].join("\n");
-		const model = parseMindMap(md, "fallback");
-		resolveRelations(model, "fallback");
-		const target = findByText(model.root, "Target");
-		expect(nodeHasPersistableMeta(target)).toBe(true);
+		const { model } = parseAndResolve(["# Root", "## Source [[#^t1]]", "## Target ^t1"].join("\n"));
+		expect(nodeHasPersistableMeta(findByText(model.root, "Target"))).toBe(true);
 	});
 
 	it("a plain node with no relation pointing at it is not considered to have persistable meta", () => {
-		const md = ["# Root", "## Plain"].join("\n");
-		const model = parseMindMap(md, "fallback");
-		resolveRelations(model, "fallback");
+		const { model } = parseAndResolve(["# Root", "## Plain"].join("\n"));
 		expect(nodeHasPersistableMeta(findByText(model.root, "Plain"))).toBe(false);
 	});
 
@@ -138,8 +112,7 @@ describe("resolveRelations: block-id forcing for round-trip (R1a item 2)", () =>
 		let counter = 0;
 		const mint = () => `mint${counter++}`;
 
-		const md = ["# Root", "## Source", "## Target"].join("\n");
-		const model = parseMindMap(md, "fallback");
+		const model = parseMindMap(["# Root", "## Source", "## Target"].join("\n"), "fallback");
 		const target = findByText(model.root, "Target");
 		const source = findByText(model.root, "Source");
 
@@ -152,8 +125,7 @@ describe("resolveRelations: block-id forcing for round-trip (R1a item 2)", () =>
 		ensurePersistentIds(model.root, model.byId, mint);
 		const serialized = serializeMindMap(model);
 
-		// The target's line must carry the block-id suffix so the reference
-		// resolves again on the next parse.
+		// The target's line must carry the block-id suffix so the reference resolves again on the next parse.
 		expect(serialized).toContain(`^${target.id}`);
 		expect(serialized).toContain(`[[#^${target.id}]]`);
 
@@ -164,8 +136,7 @@ describe("resolveRelations: block-id forcing for round-trip (R1a item 2)", () =>
 	});
 
 	it("a relation's target does NOT get a spurious empty frontmatter entry (only the block-id line suffix)", () => {
-		const md = ["# Root", "## Source [[#^t1]]", "## Target ^t1"].join("\n");
-		const model = parseMindMap(md, "fallback");
+		const model = parseMindMap(["# Root", "## Source [[#^t1]]", "## Target ^t1"].join("\n"), "fallback");
 		resolveRelations(model, "fallback");
 		ensurePersistentIds(model.root, model.byId);
 		const serialized = serializeMindMap(model);
@@ -177,10 +148,7 @@ describe("resolveRelations: block-id forcing for round-trip (R1a item 2)", () =>
 
 describe("resolveRelations: multiple relations from one node (R5 regression, authoring-UI gap, not a model gap)", () => {
 	it("a node with two same-doc relation links resolves to two activeRelations entries", () => {
-		const md = ["# Root", "## Source [[#^t1]] [[#^t2]]", "## Target 1 ^t1", "## Target 2 ^t2"].join("\n");
-		const model = parseMindMap(md, "fallback");
-		const active = resolveRelations(model, "fallback");
-
+		const { model, active } = parseAndResolve(["# Root", "## Source [[#^t1]] [[#^t2]]", "## Target 1 ^t1", "## Target 2 ^t2"].join("\n"));
 		const source = findByText(model.root, "Source [[#^t1]] [[#^t2]]");
 		const target1 = findByText(model.root, "Target 1");
 		const target2 = findByText(model.root, "Target 2");
@@ -195,8 +163,7 @@ describe("resolveRelations: multiple relations from one node (R5 regression, aut
 	});
 
 	it("appendLinkText-built multi-relation text round-trips through resolveRelations the same way", () => {
-		const md = ["# Root", "## Source", "## Target 1 ^t1", "## Target 2 ^t2"].join("\n");
-		const model = parseMindMap(md, "fallback");
+		const model = parseMindMap(["# Root", "## Source", "## Target 1 ^t1", "## Target 2 ^t2"].join("\n"), "fallback");
 		const source = findByText(model.root, "Source");
 		source.text = appendLinkText(source.text, buildLinkText({ label: "Target 1", kind: "wikilink", target: "#^t1" }));
 		source.text = appendLinkText(source.text, buildLinkText({ label: "Target 2", kind: "wikilink", target: "#^t2" }));
@@ -210,9 +177,7 @@ describe("resolveRelations: multiple relations from one node (R5 regression, aut
 
 describe("listNodeLinkItems (R3/R5 relation/link modal item list)", () => {
 	it("returns N rows for N existing links, in text order, with a correct occurrenceIndex each", () => {
-		const md = ["# Root", "## Source [[#^t1]] [[#^t2]] [ref](https://example.com)", "## Target 1 ^t1", "## Target 2 ^t2"].join("\n");
-		const model = parseMindMap(md, "fallback");
-		resolveRelations(model, "fallback");
+		const { model } = parseAndResolve(["# Root", "## Source [[#^t1]] [[#^t2]] [ref](https://example.com)", "## Target 1 ^t1", "## Target 2 ^t2"].join("\n"));
 		const source = findByText(model.root, "Source [[#^t1]] [[#^t2]] [ref](https://example.com)");
 
 		const items = listNodeLinkItems(source, model, "fallback");
@@ -221,9 +186,7 @@ describe("listNodeLinkItems (R3/R5 relation/link modal item list)", () => {
 	});
 
 	it("correctly identifies each item's badge/occurrence when same-doc, cross-doc, and plain/unresolved links are mixed (no off-by-one)", () => {
-		const md = ["# Root", "## Source [[#^t1]] [[Other Note]] [[#Some Heading]] [ref](https://example.com)", "## Target 1 ^t1"].join("\n");
-		const model = parseMindMap(md, "fallback");
-		resolveRelations(model, "fallback");
+		const { model } = parseAndResolve(["# Root", "## Source [[#^t1]] [[Other Note]] [[#Some Heading]] [ref](https://example.com)", "## Target 1 ^t1"].join("\n"));
 		const source = findByText(model.root, "Source [[#^t1]] [[Other Note]] [[#Some Heading]] [ref](https://example.com)");
 		const target1 = findByText(model.root, "Target 1");
 
@@ -242,13 +205,10 @@ describe("listNodeLinkItems (R3/R5 relation/link modal item list)", () => {
 	});
 
 	it("removing item at a given occurrenceIndex via removeLinkOccurrence leaves the remaining items correct after re-listing", () => {
-		const md = ["# Root", "## Source [[#^t1]] [[Other Note]]", "## Target 1 ^t1"].join("\n");
-		const model = parseMindMap(md, "fallback");
-		resolveRelations(model, "fallback");
+		const { model } = parseAndResolve(["# Root", "## Source [[#^t1]] [[Other Note]]", "## Target 1 ^t1"].join("\n"));
 		const source = findByText(model.root, "Source [[#^t1]] [[Other Note]]");
 
-		const before = listNodeLinkItems(source, model, "fallback");
-		expect(before).toHaveLength(2);
+		expect(listNodeLinkItems(source, model, "fallback")).toHaveLength(2);
 
 		source.text = removeLinkOccurrence(source.text, 0);
 		resolveRelations(model, "fallback");
@@ -259,9 +219,7 @@ describe("listNodeLinkItems (R3/R5 relation/link modal item list)", () => {
 	});
 
 	it("returns an empty list for a node with no links", () => {
-		const md = ["# Root", "## Plain node"].join("\n");
-		const model = parseMindMap(md, "fallback");
-		resolveRelations(model, "fallback");
+		const { model } = parseAndResolve(["# Root", "## Plain node"].join("\n"));
 		expect(listNodeLinkItems(findByText(model.root, "Plain node"), model, "fallback")).toEqual([]);
 	});
 });

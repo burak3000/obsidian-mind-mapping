@@ -1,6 +1,7 @@
 import { describe, expect, it } from "vitest";
 import { parseMindMap } from "../src/sync/parser";
 import { assignMissingSides, clearAllSides } from "../src/layout/sides";
+import { makeNode } from "./helpers/model";
 
 describe("assignMissingSides", () => {
 	it("gives every first-level branch a side", () => {
@@ -22,15 +23,7 @@ describe("assignMissingSides", () => {
 		const aSide = model.root.children[0].branchSide;
 		const bSide = model.root.children[1].branchSide;
 
-		model.root.children.push({
-			id: "new",
-			text: "C",
-			children: [],
-			parent: model.root,
-			depth: 1,
-			folded: false,
-			subtreeCount: 0,
-		});
+		model.root.children.push(makeNode({ id: "new", text: "C", parent: model.root }));
 		assignMissingSides(model.root);
 
 		expect(model.root.children[0].branchSide).toBe(aSide);
@@ -42,15 +35,7 @@ describe("assignMissingSides", () => {
 		const model = parseMindMap(["# Root", "## Heavy", "- h1", "  - h2", "  - h3", "## Light"].join("\n"), "fallback");
 		model.root.children[0].branchSide = "L"; // Heavy, much more weight
 		model.root.children[1].branchSide = "L"; // Light, pinned to the *same* side as Heavy
-		model.root.children.push({
-			id: "new",
-			text: "New",
-			children: [],
-			parent: model.root,
-			depth: 1,
-			folded: false,
-			subtreeCount: 0,
-		});
+		model.root.children.push(makeNode({ id: "new", text: "New", parent: model.root }));
 		assignMissingSides(model.root);
 		// A weight-greedy policy would put "New" on the (empty, lighter) right
 		// side; adjacency-inherit instead extends the existing left run so the
@@ -62,15 +47,7 @@ describe("assignMissingSides", () => {
 		const model = parseMindMap(["# Root", "## A", "## B"].join("\n"), "fallback");
 		assignMissingSides(model.root);
 		const [a, b] = model.root.children;
-		const front: import("../src/model/types").MindNode = {
-			id: "front",
-			text: "Front",
-			children: [],
-			parent: model.root,
-			depth: 1,
-			folded: false,
-			subtreeCount: 0,
-		};
+		const front = makeNode({ id: "front", text: "Front", parent: model.root });
 		model.root.children.unshift(front);
 		assignMissingSides(model.root);
 		expect(front.branchSide).toBe(a.branchSide);

@@ -86,13 +86,6 @@ describe("Controller", () => {
 		expect(controller.model.byId.get(childA.id)).toBe(childA);
 	});
 
-	it("deleteSelected cannot delete the root", () => {
-		const controller = makeController();
-		controller.select(controller.model.root.id);
-		controller.deleteSelected();
-		expect(controller.model.byId.has(controller.model.root.id)).toBe(true);
-	});
-
 	it("delete + undo restores correct subtreeCount along the ancestor chain", () => {
 		const controller = makeController();
 		const branchA = controller.model.root.children[0];
@@ -309,10 +302,10 @@ describe("Controller", () => {
 		expect(branchA.children[0]).toBe(childA);
 	});
 
-	it("cutSelected cannot cut the root", () => {
+	it.each(["deleteSelected", "cutSelected"] as const)("%s cannot act on the root", (method) => {
 		const controller = makeController();
 		controller.select(controller.model.root.id);
-		controller.cutSelected();
+		controller[method]();
 		expect(controller.model.byId.has(controller.model.root.id)).toBe(true);
 	});
 
@@ -630,25 +623,19 @@ describe("Controller clipboard export/paste (plan item 06: tree copy to OS clipb
 			return makeController(["# Root", "## A", "- a1", "- a2", "- a3"].join("\n"));
 		}
 
-		it("Alt+Up swaps the selected node with its previous sibling", () => {
+		it.each([
+			["up", [1, 0, 2]],
+			["down", [0, 2, 1]],
+		] as const)("Alt+%s swaps the selected node with its neighbor, selection following the moved node's id", (direction, order) => {
 			const controller = makeSiblingsController();
 			const a = controller.model.root.children[0];
-			const [a1, a2, a3] = a.children;
+			const originalIds = a.children.map((n) => n.id);
+			const a2 = a.children[1];
 			controller.select(a2.id);
 
-			controller.moveSelectedInSiblingOrder("up");
-			expect(a.children.map((n) => n.id)).toEqual([a2.id, a1.id, a3.id]);
-			expect(controller.selectedId).toBe(a2.id); // selection follows the moved node's id, not its slot
-		});
-
-		it("Alt+Down swaps the selected node with its next sibling", () => {
-			const controller = makeSiblingsController();
-			const a = controller.model.root.children[0];
-			const [a1, a2, a3] = a.children;
-			controller.select(a2.id);
-
-			controller.moveSelectedInSiblingOrder("down");
-			expect(a.children.map((n) => n.id)).toEqual([a1.id, a3.id, a2.id]);
+			controller.moveSelectedInSiblingOrder(direction);
+			expect(a.children.map((n) => n.id)).toEqual(order.map((i) => originalIds[i]));
+			expect(controller.selectedId).toBe(a2.id);
 		});
 
 		it("is a no-op on the first sibling with Alt+Up, and the last sibling with Alt+Down", () => {

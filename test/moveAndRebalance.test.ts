@@ -1,6 +1,6 @@
 import { describe, expect, it } from "vitest";
 import { parseMindMap } from "../src/sync/parser";
-import { moveNode, rebalanceAll, setManualPosition } from "../src/model/mutations";
+import { moveNode, rebalanceAll } from "../src/model/mutations";
 import { Controller } from "../src/controller/Controller";
 
 function makeModel(md = "# Root\n## A\n- a1\n## B\n- b1\n") {
@@ -34,18 +34,14 @@ describe("moveNode", () => {
 		expect(a2.depth).toBe(3);
 	});
 
-	it("is a no-op when moving a node under itself", () => {
-		const model = makeModel();
-		const a = model.root.children[0];
-		moveNode(model, a.id, a.id);
-		expect(a.parent).toBe(model.root);
-	});
-
-	it("is a no-op when moving a node under its own descendant (would create a cycle)", () => {
+	it.each([
+		["itself", (a: { id: string }) => a.id],
+		["its own descendant (would create a cycle)", (_a: { id: string }, a1: { id: string }) => a1.id],
+	])("is a no-op when moving a node under %s", (_label, getTargetId) => {
 		const model = makeModel();
 		const a = model.root.children[0];
 		const a1 = a.children[0];
-		moveNode(model, a.id, a1.id);
+		moveNode(model, a.id, getTargetId(a, a1));
 		expect(a.parent).toBe(model.root);
 		expect(a1.parent).toBe(a);
 	});
@@ -59,59 +55,44 @@ describe("moveNode", () => {
 	});
 });
 
-describe("rebalanceAll", () => {
-	it("clears manual positions and branch sides on every node", () => {
-		const model = makeModel();
-		const a = model.root.children[0];
-		const a1 = a.children[0];
-		a.branchSide = "L";
-		a1.manualPos = { x: 10, y: 10 };
+it("rebalanceAll clears manual positions and branch sides on every node", () => {
+	const model = makeModel();
+	const a = model.root.children[0];
+	const a1 = a.children[0];
+	a.branchSide = "L";
+	a1.manualPos = { x: 10, y: 10 };
 
-		rebalanceAll(model);
-		expect(a.branchSide).toBeUndefined();
-		expect(a1.manualPos).toBeUndefined();
-	});
+	rebalanceAll(model);
+	expect(a.branchSide).toBeUndefined();
+	expect(a1.manualPos).toBeUndefined();
 });
 
 describe("Controller manual position / move / rebalance", () => {
-	it("setManualPosition is undoable, restoring 'no pin' if there wasn't one before", () => {
+	it.each([
+		["setManualPosition", "manualPos", { x: 100, y: 200 }],
+		["setManualWidth", "manualWidth", 250],
+	] as const)("%s is undoable, restoring 'no pin' if there wasn't one before", (method, prop, value) => {
 		const controller = new Controller(makeModel());
 		const a = controller.model.root.children[0];
-		controller.setManualPosition(a.id, { x: 100, y: 200 });
-		expect(a.manualPos).toEqual({ x: 100, y: 200 });
+		(controller[method] as (id: string, v: unknown) => void).call(controller, a.id, value);
+		expect(a[prop]).toEqual(value);
 		controller.undo();
-		expect(a.manualPos).toBeUndefined();
+		expect(a[prop]).toBeUndefined();
 		controller.redo();
-		expect(a.manualPos).toEqual({ x: 100, y: 200 });
+		expect(a[prop]).toEqual(value);
 	});
 
-	it("setManualPosition undo restores the previous pin, not just clears it", () => {
+	it.each([
+		["setManualPosition", "manualPos", { x: 1, y: 1 }, { x: 2, y: 2 }],
+		["setManualWidth", "manualWidth", 200, 300],
+	] as const)("%s undo restores the previous value, not just clears it", (method, prop, first, second) => {
 		const controller = new Controller(makeModel());
 		const a = controller.model.root.children[0];
-		controller.setManualPosition(a.id, { x: 1, y: 1 });
-		controller.setManualPosition(a.id, { x: 2, y: 2 });
+		const call = (id: string, v: unknown) => (controller[method] as (id: string, v: unknown) => void).call(controller, id, v);
+		call(a.id, first);
+		call(a.id, second);
 		controller.undo();
-		expect(a.manualPos).toEqual({ x: 1, y: 1 });
-	});
-
-	it("setManualWidth is undoable, restoring 'no pin' if there wasn't one before", () => {
-		const controller = new Controller(makeModel());
-		const a = controller.model.root.children[0];
-		controller.setManualWidth(a.id, 250);
-		expect(a.manualWidth).toBe(250);
-		controller.undo();
-		expect(a.manualWidth).toBeUndefined();
-		controller.redo();
-		expect(a.manualWidth).toBe(250);
-	});
-
-	it("setManualWidth undo restores the previous width, not just clears it", () => {
-		const controller = new Controller(makeModel());
-		const a = controller.model.root.children[0];
-		controller.setManualWidth(a.id, 200);
-		controller.setManualWidth(a.id, 300);
-		controller.undo();
-		expect(a.manualWidth).toBe(200);
+		expect(a[prop]).toEqual(first);
 	});
 
 	it("moveNode is undoable back to the exact original index", () => {
@@ -129,32 +110,17 @@ describe("Controller manual position / move / rebalance", () => {
 	});
 
 	describe("same-level reorder (before/after)", () => {
-		it("moves a node before an earlier sibling within the same parent", () => {
+		it.each([
+			["before an earlier sibling", 2, 0, "before", [2, 0, 1]],
+			["after a later sibling", 0, 1, "after", [1, 0, 2]],
+			["after an earlier sibling", 2, 0, "after", [0, 2, 1]],
+		] as const)("moves a node %s within the same parent", (_label, fromIdx, toIdx, position, order) => {
 			const controller = new Controller(makeModel(["# Root", "## A", "- a1", "- a2", "- a3"].join("\n")));
 			const a = controller.model.root.children[0];
-			const [a1, a2, a3] = a.children;
+			const ids = a.children.map((n) => n.id);
 
-			controller.moveNode(a3.id, a1.id, "before");
-			expect(a.children.map((n) => n.id)).toEqual([a3.id, a1.id, a2.id]);
-			expect(a3.parent).toBe(a);
-		});
-
-		it("moves a node after a later sibling within the same parent", () => {
-			const controller = new Controller(makeModel(["# Root", "## A", "- a1", "- a2", "- a3"].join("\n")));
-			const a = controller.model.root.children[0];
-			const [a1, a2, a3] = a.children;
-
-			controller.moveNode(a1.id, a2.id, "after");
-			expect(a.children.map((n) => n.id)).toEqual([a2.id, a1.id, a3.id]);
-		});
-
-		it("moves a node after an earlier sibling within the same parent", () => {
-			const controller = new Controller(makeModel(["# Root", "## A", "- a1", "- a2", "- a3"].join("\n")));
-			const a = controller.model.root.children[0];
-			const [a1, a2, a3] = a.children;
-
-			controller.moveNode(a3.id, a1.id, "after");
-			expect(a.children.map((n) => n.id)).toEqual([a1.id, a3.id, a2.id]);
+			controller.moveNode(ids[fromIdx], ids[toIdx], position);
+			expect(a.children.map((n) => n.id)).toEqual(order.map((i) => ids[i]));
 		});
 
 		it("reorders across different parents by dropping before/after a node in another branch", () => {
