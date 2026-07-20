@@ -9,8 +9,7 @@ b3k Obsidian Mind Mapping Tool
 ## mind mapping intro ^glwety
 - who
   - Tony Buzan
-    - his well known video on this topic in youtube
-      - https://www.youtube.com/watch?v=u5Y4pIsXTV0
+    - his well known video on this topic in youtube → [youtube video](https://www.youtube.com/watch?v=u5Y4pIsXTV0)
 - what
   - mind mapping
 - where
@@ -63,7 +62,7 @@ b3k Obsidian Mind Mapping Tool
                 - very compelling UI
                 - directly from the creator
                   - good features
-          - Xmind
+          - a popular freemium mind-mapping app
             - advantages
               - base product is free
             - disadvantages
