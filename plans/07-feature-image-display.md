@@ -79,7 +79,7 @@ and memory/decode cost:
 | Option | Look | Cost |
 |---|---|---|
 | **A. Small fixed thumb (~120 px), click opens the image in an Obsidian modal/tab** *(recommended, chosen)* | Compact, uniform map | Bounded memory & decode; zero layout reflow |
-| B. Larger inline images (up to node wrap width, height from aspect ratio) | Richer, XMind-like | Layout depends on image dimensions → must read intrinsic size on first load → one-time reflow per image; more memory |
+| B. Larger inline images (up to node wrap width, height from aspect ratio) | Richer, closer to a traditional desktop mind-mapper | Layout depends on image dimensions → must read intrinsic size on first load → one-time reflow per image; more memory |
 | C. Icon-only marker, hover/click to preview | Cheapest | Least visual value |
 
 ## Implementation notes

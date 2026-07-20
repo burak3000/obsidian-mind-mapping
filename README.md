@@ -1,13 +1,13 @@
 # Mind Map View
 
-An XMind-like mind mapping view for [Obsidian](https://obsidian.md) that operates directly on your `.md` files — the markdown outline *is* the mind map, in both directions. No proprietary file format: the map is always a normal, readable markdown note underneath.
+A mind mapping view for [Obsidian](https://obsidian.md), in the style of a traditional desktop mind-mapper, that operates directly on your `.md` files — the markdown outline *is* the mind map, in both directions. No proprietary file format: the map is always a normal, readable markdown note underneath.
 
 ## Features
 
 - **True bidirectional sync** — edit the map, the markdown updates; edit the markdown (in Obsidian's normal editor, or any other tool), the map updates.
-- **Keyboard-first editing**, matching XMind conventions: `Tab` for a child, `Enter` for a sibling, `F2` to rename, arrow keys to navigate.
+- **Keyboard-first editing**, matching familiar desktop-mind-mapper conventions: `Tab` for a child, `Enter` for a sibling, `F2` to rename, arrow keys to navigate.
 - **Organic, tapered, colored branches** — each first-level branch gets its own color, inherited by its descendants; branch width tapers with depth.
-- **Balanced auto-layout** — first-level branches are distributed left/right of the root to balance the map, XMind-style.
+- **Balanced auto-layout** — first-level branches are distributed left/right of the root to balance the map, in the classic mind-map style.
 - **Folding** with a child-count badge, persisted across sessions.
 - **Links** — wikilinks, URLs, and file paths are clickable directly on the map; `Ctrl/Cmd+Shift+L` opens a link editor.
 - **Manual positioning** — `Alt`+drag any node to a custom position; a "Rebalance" command resets everything back to auto-layout.

@@ -73,7 +73,7 @@ the authoritative check, not yet done manually.
 |---|---|---|
 | Plugin bundle size (`dist/main.js`, production, M2: +controller+mutations+undo+serializer+inline editor) | < 500 KB | 27.5 KB |
 
-## M3 — XMind visuals (organic branches, color, taper, balanced L/R)
+## M3 — mind-map visuals (organic branches, color, taper, balanced L/R)
 
 Initial implementation regressed Tab latency at 5,000 nodes by 62% (33.7ms
 -> 54.6ms) because balanced L/R layout recomputed the optimal split from

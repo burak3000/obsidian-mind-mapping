@@ -34,7 +34,7 @@ index K chosen by subtree weight:
 - "Anticlockwise" fixes which side starts and which direction each side
   reads. Starting at the **top-right** and going anticlockwise: right side
   reads **bottom→top**, left side reads **top→bottom**… whereas the familiar
-  XMind arrangement (item 1 top-right, then down) is *clockwise*. See
+  desktop-mind-mapper arrangement (item 1 top-right, then down) is *clockwise*. See
   **Decision 2** — the exact geometry needs the user's confirmation.
 
 ## Implementation sketch
@@ -88,7 +88,7 @@ mental model? (`1..N` = document order, K = split)
 
 - **(a)** `1..K` right side top→bottom, `K+1..N` left side **bottom→top**
   (reading order runs clockwise-down the right, then anticlockwise-up the
-  left — XMind-like start, anticlockwise return)
+  left — familiar desktop-mind-mapper start, anticlockwise return)
 - **(b)** `1..K` right side **bottom→top**, `K+1..N` left side top→bottom
   (strict anticlockwise starting bottom-right)
 - **(c)** `1..K` **left** side top→bottom, `K+1..N` right side bottom→top

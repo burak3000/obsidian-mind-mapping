@@ -1,33 +1,33 @@
 # Obsidian Mind Mapping Plugin — Implementation Plan
 
-**Goal:** Build a custom Obsidian plugin that provides an XMind-like mind mapping experience directly on `.md` files, because existing community plugins fall short. **Performance is a first-class, non-negotiable requirement throughout.** This document is the working plan for iterative development with Claude Code.
+**Goal:** Build a custom Obsidian plugin that provides a traditional desktop-mind-mapper experience directly on `.md` files, because existing community plugins fall short. **Performance is a first-class, non-negotiable requirement throughout.** This document is the working plan for iterative development with Claude Code.
 
 ---
 
 ## 1. Vision & Goals
 
-- An interactive mind map view inside Obsidian that **works like XMind**: fast keyboard-driven node creation, organic curved branches, per-subtopic coloring, folding with child-count indicators, auto-balance, and custom positioning.
+- An interactive mind map view inside Obsidian with the feel of a **traditional desktop mind-mapper**: fast keyboard-driven node creation, organic curved branches, per-subtopic coloring, folding with child-count indicators, auto-balance, and custom positioning.
 - The map **operates directly on `.md` files**: the markdown hierarchy reflects the mind map and vice versa (true bidirectional sync). The markdown file remains readable and useful as a normal note.
 - Links (web URLs, file/folder links, Obsidian internal wikilinks) are first-class node content.
 - The plugin must feel **instant, like a native app**, even on large maps and mid-range hardware. Performance is treated as a hard constraint equal to correctness.
 
 ### Non-goals (v1)
 - Rich per-node styling (fonts, shapes, images, themes) — deferred to future versions ("support for more styling").
-- Multi-sheet workbooks, presentation/pitch mode, Gantt views, or other XMind extras.
+- Multi-sheet workbooks, presentation/pitch mode, Gantt views, or other commercial-mind-mapper extras.
 - Real-time multi-user collaboration.
 
 ---
 
 ## 2. Requirements Analysis
 
-### 2.1 Functional requirements (from the XMind notes)
+### 2.1 Functional requirements (from the original feature notes)
 
 | # | Requirement | Notes / Interpretation |
 |---|---|---|
-| R1 | Works like XMind | UX conventions, shortcuts, and visual language modeled on XMind |
+| R1 | Works like a traditional desktop mind-mapper | UX conventions, shortcuts, and visual language modeled on that class of app |
 | R2 | `Tab` creates a new child under the selected node | Immediately editable; focus moves to new node |
 | R3 | `Enter` creates a new sibling at the same level | Inserted after current node; immediately editable |
-| R4 | Other important XMind shortcuts supported | Full map in §8 (navigation, rename, delete, fold, zoom, etc.) |
+| R4 | Other important desktop-mind-mapper shortcuts supported | Full map in §8 (navigation, rename, delete, fold, zoom, etc.) |
 | R5 | Adding links: web links, file/folder links | Also Obsidian wikilinks `[[Note]]`; links clickable in map view |
 | R6 | Works on `.md` files | No proprietary format as source of truth |
 | R7 | Hierarchy reflects the mind map and vice versa | Bidirectional sync: edit md → map updates; edit map → md updates |
@@ -52,11 +52,11 @@
 
 ### 2.3 Why existing plugins fall short (gap analysis)
 
-- **Obsidian Mind Map (markmap-based):** read-only rendering of the outline; no editing from the map, no custom positioning, no folding persistence, no XMind-like interaction model.
+- **Obsidian Mind Map (markmap-based):** read-only rendering of the outline; no editing from the map, no custom positioning, no folding persistence, no desktop-mind-mapper-like interaction model.
 - **Enhancing Mindmap:** editable but aging/unmaintained, limited layout control, sync quirks, no organic tapered branches or per-subtopic color inheritance done well.
 - **Markmind:** closed/paid tiers, mixed md fidelity, its "rich" mode moves away from plain markdown as source of truth.
 - **Obsidian Canvas / Excalidraw:** free-form, not hierarchy-bound; no md-hierarchy sync, no auto-balance, not keyboard-first.
-- Common gaps this plugin targets: **true bidirectional md sync + XMind-grade keyboard flow + organic tapered colored branches + folding with indicators + auto-balance with manual-position override + high performance on large maps.**
+- Common gaps this plugin targets: **true bidirectional md sync + desktop-mind-mapper-grade keyboard flow + organic tapered colored branches + folding with indicators + auto-balance with manual-position override + high performance on large maps.**
 
 ---
 
@@ -256,7 +256,7 @@ mindmap:
 
 ---
 
-## 8. Keyboard Shortcuts (XMind parity)
+## 8. Keyboard Shortcuts (desktop-mind-mapper parity)
 
 All registered as Obsidian commands (user-remappable) with defaults scoped to the mind map view:
 
@@ -285,7 +285,7 @@ Handlers are synchronous and light; serialization and layout animation are defer
 
 ### 9.1 Organic branches (R8)
 
-- Each branch is a cubic Bezier from parent anchor to child anchor; control points offset horizontally by a fraction of the gap for the classic XMind "S-curve".
+- Each branch is a cubic Bezier from parent anchor to child anchor; control points offset horizontally by a fraction of the gap for the classic mind-map "S-curve".
 - **Tapered width (R10):** stroke width by depth, e.g., `w = max(1.5, 10 · 0.66^depth)` px — root limbs thick, leaves thin. For high-fidelity taper (variable width along one path), filled outline paths are an option — extra path cost → §3.4.4 trade-off.
 - Path strings are precomputed and cached; only paths whose endpoints moved are regenerated.
 
@@ -296,7 +296,7 @@ Handlers are synchronous and light; serialization and layout animation are defer
 
 ### 9.3 Auto-balance layout (R11)
 
-- `d3-flextree` computes a tidy layout per side; first-level branches are partitioned Left/Right to balance total subtree heights (classic XMind balanced map). Modes: `balanced` (default), `right-only`, `left-only`.
+- `d3-flextree` computes a tidy layout per side; first-level branches are partitioned Left/Right to balance total subtree heights (classic balanced mind map). Modes: `balanced` (default), `right-only`, `left-only`.
 - **Incremental relayout:** subtree extents cached; a local edit recomputes the changed subtree and shifts affected siblings/ancestors — O(changed + shifted), not O(n).
 - **Manual positions (R12):** nodes with `manualPos` (and their subtrees) are pinned and excluded from auto-layout; a "re-balance" command clears pins on demand.
 - Transitions animate via interpolated transforms with a capped duration; animation auto-disables above a node-count threshold (threshold tuning → ask the user, §3.4.2).
@@ -330,7 +330,7 @@ Parser (headings + lists → model), flextree layout (right-only), SVG renderer 
 **M2 — Core editing + sync**
 Tab/Enter/F2/Delete/arrows, inline editor, undo/redo, serializer with content preservation, debounced write-back, external-change reconciliation by block-id. *Exit:* keystroke and node-creation latency within budget; round-trip loses nothing.
 
-**M3 — XMind visuals**
+**M3 — mind-map visuals**
 Organic Bezier branches, per-subtopic color inheritance, tapered widths, balanced L/R layout, theme adaptation. *Exit:* full relayout of 2k nodes < 100 ms.
 
 **M4 — Folding & balance polish**
@@ -371,7 +371,7 @@ Viewport culling, incremental parse optimization, 5k stress test, mobile spot-ch
 ## 13. Future Enhancements (post-v1)
 
 - More styling (R15): per-node colors/shapes/fonts, images/icons on nodes, boundary/summary shapes, themes.
-- Export: PNG/SVG/PDF, XMind import.
+- Export: PNG/SVG/PDF, import from other mind-mapping tools.
 - Search/filter within map; jump-to-node from editor cursor and back.
 - Relationship lines between arbitrary nodes; notes/labels on nodes.
 - Multiple maps per file (per-heading root selection).

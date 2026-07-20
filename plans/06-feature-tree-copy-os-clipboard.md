@@ -21,7 +21,7 @@ plugin.
    [serializer.ts](../src/sync/serializer.ts)): emits the subtree as a
    markdown **nested list** (`- text` with 2-space indents), the node itself
    as the top item. Lists are the right target format — they paste cleanly
-   into other Obsidian notes, XMind, and plain-text editors, and they
+   into other Obsidian notes, other mind-mapping tools, and plain-text editors, and they
    round-trip through our own parser. **Strip ` ^blockid` suffixes and
    mindmap metadata** — ids must not leak/duplicate.
 2. `copySelected` / `cutSelected` additionally write that text via

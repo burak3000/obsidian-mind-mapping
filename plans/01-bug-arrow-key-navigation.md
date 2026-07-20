@@ -31,7 +31,7 @@ Two independent causes:
 
 ## Approach: structural navigation first, geometric fallback
 
-Mind maps are trees; arrows should follow tree relationships (XMind behavior):
+Mind maps are trees; arrows should follow tree relationships (standard desktop-mind-mapper behavior):
 
 - **Toward the root** (Left on a right-side node, Right on a left-side node)
   → select the parent.

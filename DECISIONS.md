@@ -1266,7 +1266,7 @@ until the user clicked back into the pane.
 weighting — rejected: a cousin/off-branch node can always score better than
 the true sibling/parent/child for some multi-line or manually-positioned
 layout, so no weighting fully eliminates the wrong-branch jump; structural-
-first is what the tree actually models and matches XMind's arrow behavior.
+first is what the tree actually models and matches standard desktop-mind-mapper arrow behavior.
 **Cost:** O(siblings) for the common parent/child/sibling-within-group case
 — strictly cheaper than the previous always-O(visible) scan. The two
 fallback paths (root Up/Down; Up/Down past a sibling group's edge) are
@@ -1397,7 +1397,7 @@ appeared in the empty space between where its incoming branch visually
 ended and where its own outgoing branches began, instead of sitting
 directly on the branch — most visible on multi-level chains, where each
 label looked like it was floating in a gap rather than riding on the
-connecting line (XMind's usual "floating topic" look has no such gap).
+connecting line (the usual desktop-mind-mapper "floating topic" look has no such gap).
 **Root cause:** `SvgRenderer.edgePath`'s child-side anchor (`x2`) used
 the child's *near* edge (the side facing the parent) — e.g. for a
 right-side branch, `childLayout.x` (the box's left edge). Since the
