@@ -62,20 +62,25 @@ above bite hardest on — start there when reasoning about a perf trade-off.
   markdown per interaction): `types.ts`, `mutations.ts` (O(depth)
   subtree-count bumps), `commandStack.ts` (undo/redo via inverse closures
   capped at 100 edits, not full snapshots), `visibility.ts` (fold-aware
-  visible-node list), `search.ts`, `links.ts`, `textWrap.ts`.
+  visible-node list), `search.ts`, `links.ts`, `textWrap.ts`, `id.ts`
+  (shared monotonic id counter for parser + live mutations, never reset
+  mid-session), `relations.ts` (same-doc node-relation resolution),
+  `statusBadges.ts` (the 6 canonical status-badge definitions — single
+  source of truth for mutation/renderer/menu code).
 - `layout/` — `layoutEngine.ts` (d3-flextree wrapper, partial/per-region
   relayout), `sides.ts` (left/right branch assignment in anticlockwise
   document order, recomputed only on explicit Rebalance).
 - `render/` — `SvgRenderer.ts` (hand-rolled SVG, dirty-tracked updates,
-  viewport culling above a 300-node threshold), `colors.ts` (stable
-  per-branch palette), `navigation.ts` (arrow-key nearest-node scan over
-  cached layout positions).
+  viewport culling above a 300-node threshold, also draws node relations),
+  `colors.ts` (stable per-branch palette), `navigation.ts` (arrow-key
+  nearest-node scan over cached layout positions).
 - `sync/` — markdown ⟷ model, bidirectionally: `parser.ts`,
   `serializer.ts` (content-preserving — text the plugin doesn't understand
   round-trips untouched), `reconcile.ts` (structural-position matching
   after external file edits), `metadata.ts` (the `mindmap:` frontmatter
   block for fold state/manual positions), `debounce.ts` (400 ms write-back
-  debounce), `goToSection.ts`, `parseExternalPaste.ts`.
+  debounce), `goToSection.ts`, `parseExternalPaste.ts`, `foreignRelation.ts`
+  (cross-document relation resolution/linking).
 - `controller/Controller.ts` — orchestrates mutations, selection, and
   clipboard across model/layout/render/sync; the central integration point.
 - `view/` — Obsidian-facing UI: `MindMapView.ts` (the `TextFileView`
@@ -96,6 +101,8 @@ above bite hardest on — start there when reasoning about a perf trade-off.
   (Tab/rename/delete/fold/unfold across the fixture sizes).
 - `npm run bench:images` — image-heavy map benchmark (200 image-embed
   nodes — the worst case for the lazy-load/culling path).
+- `npm run bench:relations` — node-relations benchmark (same-doc arrows +
+  cross-doc badges) across the fixture sizes.
 
 ## Process notes
 
