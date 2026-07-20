@@ -44,8 +44,8 @@ export interface MindNode {
 	 * this node's `text`, cached and invalidated by comparing
 	 * `relationLinksCacheText` to the current `text` — keeps relation
 	 * resolution off the hot path (mirrors `getDisplayText`'s fast path in
-	 * links.ts: most node text has no `[` at all and never touches the
-	 * regex). See `model/relations.ts`'s `resolveRelations`.
+	 * links.ts: most nodes have no `[` in their text at all and never touch
+	 * the regex). See `model/relations.ts`'s `resolveRelations`.
 	 */
 	relationLinksCacheText?: string;
 	relationLinksCache?: { kind: LinkKind; target: string }[];
@@ -65,6 +65,26 @@ export interface MindNode {
 	 * referencing it) would be dropped on the next round-trip (R1a item 2).
 	 */
 	isRelationTarget?: boolean;
+	/**
+	 * True when this node is the target of a relation authored *from another
+	 * file* (R4 cross-doc relation authoring,
+	 * `sync/foreignRelation.ts`'s `commitForeignRelationTarget`). Deliberately
+	 * a separate field from `isRelationTarget`, not a reuse of it:
+	 * `isRelationTarget` is recomputed from scratch every parse by
+	 * `resolveRelations` (`model/relations.ts`), which unconditionally resets
+	 * it to `false` before re-deriving it from *this file's own* link text —
+	 * a cross-doc reference lives in the *other* file's node text, so it has
+	 * nothing in this file to re-justify the flag on any later, independent
+	 * reparse+resave (the file is opened as its own mind map and something
+	 * unrelated is edited). `externalRelationTarget` is instead loaded from
+	 * (and written to) this file's own `mindmap:` frontmatter — see
+	 * `sync/metadata.ts`'s `NodeMeta.externalRef` — so it survives exactly
+	 * the same way `folded`/`manualPos`/`manualWidth` do: independent of
+	 * anything derived from the file's own content on that parse. Read by
+	 * `nodeHasPersistableMeta` (sync/metadata.ts) alongside `isRelationTarget`
+	 * so the node's block-id suffix keeps getting written either way.
+	 */
+	externalRelationTarget?: boolean;
 	/**
 	 * Non-heading/non-list lines (paragraphs, code fences, blank lines) that
 	 * followed this node's own line in the source, preserved verbatim for

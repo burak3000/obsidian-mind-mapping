@@ -73,7 +73,7 @@ describe("SvgRenderer: R1a relation arrows", () => {
 		expect(container.querySelectorAll(".mm-relation").length).toBe(1);
 
 		const source = model.root.children[0];
-		source.text = "Source, no relation anymore";
+		source.text = "Source";
 		computeLayout(model.root);
 		renderer.update(model, resolveRelations(model, "fallback"));
 
@@ -249,7 +249,7 @@ describe("SvgRenderer: R2 cross-document relation badge", () => {
 		const branch = model.root.children[0];
 		expect(container.querySelector(`[data-node-id="${branch.id}"] .mm-cross-doc-badge`)).not.toBeNull();
 
-		branch.text = "Source, no link anymore";
+		branch.text = "Source";
 		computeLayout(model.root);
 		resolveRelations(model, "fallback");
 		renderer.update(model, []);

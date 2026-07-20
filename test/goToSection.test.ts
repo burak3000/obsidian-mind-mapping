@@ -36,6 +36,7 @@ describe("findNodeLine", () => {
 		const model = parseMindMap(["# Root", "## Branch A"].join("\n"), "fallback");
 		expect(findNodeLine(model, "does-not-exist")).toBeNull();
 	});
+
 });
 
 describe("resolveGoToTarget", () => {

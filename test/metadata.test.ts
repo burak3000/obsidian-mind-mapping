@@ -34,6 +34,16 @@ describe("extractMindmapData", () => {
 		const fm = ["---", "mindmap:", "  nodes:", "    ^abc123: { folded: true }", "tags: [x]", "---"].join("\n");
 		expect(extractMindmapData(fm)).toEqual({ nodes: { abc123: { folded: true } } });
 	});
+
+	it("parses externalRef:true node entries (R4 durability fix)", () => {
+		const fm = ["---", "mindmap:", "  nodes:", "    ^abc123: { externalRef: true }", "---"].join("\n");
+		expect(extractMindmapData(fm)).toEqual({ nodes: { abc123: { externalRef: true } } });
+	});
+
+	it("ignores entries without externalRef:true", () => {
+		const fm = ["---", "mindmap:", "  nodes:", "    ^abc123: { }", "---"].join("\n");
+		expect(extractMindmapData(fm)).toEqual({ nodes: {} });
+	});
 });
 
 describe("applyMindmapDataToTree", () => {
@@ -46,6 +56,12 @@ describe("applyMindmapDataToTree", () => {
 	it("ignores ids that don't match any node", () => {
 		const model = parseMindMap(["# Root", "## Branch A"].join("\n"), "fallback");
 		expect(() => applyMindmapDataToTree(model.byId, { nodes: { nonexistent: { folded: true } } })).not.toThrow();
+	});
+
+	it("sets externalRelationTarget=true on matching nodes by block id (R4 durability fix)", () => {
+		const model = parseMindMap(["# Root", "## Branch A ^abc123"].join("\n"), "fallback");
+		applyMindmapDataToTree(model.byId, { nodes: { abc123: { externalRef: true } } });
+		expect(model.root.children[0].externalRelationTarget).toBe(true);
 	});
 });
 
@@ -87,6 +103,51 @@ describe("applyMindmapData (round-trip on frontmatter text)", () => {
 		const original = { nodes: { a1: { folded: true }, b2: { folded: true } } };
 		const text = applyMindmapData(null, original);
 		expect(extractMindmapData(text)).toEqual(original);
+	});
+});
+
+describe("externalRelationTarget durability (R4 fix, sync/foreignRelation.ts's commitForeignRelationTarget)", () => {
+	it("nodeHasPersistableMeta is true purely from externalRelationTarget, independent of fold/pos/width", () => {
+		const model = parseMindMap(["# Root", "## Branch A"].join("\n"), "fallback");
+		const branch = model.root.children[0];
+		expect(nodeHasPersistableMeta(branch)).toBe(false);
+		branch.externalRelationTarget = true;
+		expect(nodeHasPersistableMeta(branch)).toBe(true);
+		expect(branch.folded).toBe(false);
+		expect(branch.manualPos).toBeUndefined();
+		expect(branch.manualWidth).toBeUndefined();
+	});
+
+	it("a node with only externalRelationTarget=true round-trips through collectMeta -> applyMindmapData -> extractMindmapData -> applyMindmapDataToTree on a fresh parse", () => {
+		// Simulate the actual bug scenario: parse, mark external (as
+		// commitForeignRelationTarget does), serialize, then parse the
+		// serialized output *again* as if it were a brand-new session with no
+		// memory of the original in-session state.
+		const model = parseMindMap(["# Root", "## Branch A"].join("\n"), "fallback");
+		const branch = model.root.children[0];
+		expect(isSyntheticId(branch.id)).toBe(true);
+		branch.externalRelationTarget = true;
+
+		ensurePersistentIds(model.root, model.byId, () => "extref1");
+		expect(branch.id).toBe("extref1");
+
+		const meta: Record<string, { folded?: boolean; pos?: [number, number]; width?: number; externalRef?: boolean }> = {};
+		meta[branch.id] = { externalRef: branch.externalRelationTarget || undefined };
+		const frontmatter = applyMindmapData(null, { nodes: meta });
+		expect(frontmatter).toContain("externalRef: true");
+
+		// Fresh, independent parse of the serialized text (no shared state
+		// with `model`/`branch` above).
+		const serializedText = [frontmatter, "# Root", "## Branch A ^extref1"].join("\n");
+		const reparsed = parseMindMap(serializedText, "fallback");
+		const reparsedBranch = reparsed.root.children[0];
+
+		expect(reparsedBranch.id).toBe("extref1");
+		expect(reparsedBranch.externalRelationTarget).toBe(true);
+		// isRelationTarget was never set in this file's own content, so it's
+		// correctly absent — externalRelationTarget is the field carrying the
+		// durable fact, exactly as designed.
+		expect(reparsedBranch.isRelationTarget).toBeUndefined();
 	});
 });
 

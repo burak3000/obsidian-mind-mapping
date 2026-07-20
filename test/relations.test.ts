@@ -2,7 +2,8 @@ import { describe, expect, it } from "vitest";
 import { parseMindMap } from "../src/sync/parser";
 import { serializeMindMap } from "../src/sync/serializer";
 import { ensurePersistentIds, nodeHasPersistableMeta } from "../src/sync/metadata";
-import { resolveRelations } from "../src/model/relations";
+import { listNodeLinkItems, resolveRelations } from "../src/model/relations";
+import { appendLinkText, buildLinkText, removeLinkOccurrence } from "../src/model/links";
 import { MindNode } from "../src/model/types";
 
 function findByTextOrNull(root: MindNode, text: string): MindNode | null {
@@ -171,5 +172,96 @@ describe("resolveRelations: block-id forcing for round-trip (R1a item 2)", () =>
 
 		expect(serialized).toContain("^t1");
 		expect(serialized).not.toContain("mindmap:"); // no frontmatter needed for a relation-only target
+	});
+});
+
+describe("resolveRelations: multiple relations from one node (R5 regression, authoring-UI gap, not a model gap)", () => {
+	it("a node with two same-doc relation links resolves to two activeRelations entries", () => {
+		const md = ["# Root", "## Source [[#^t1]] [[#^t2]]", "## Target 1 ^t1", "## Target 2 ^t2"].join("\n");
+		const model = parseMindMap(md, "fallback");
+		const active = resolveRelations(model, "fallback");
+
+		const source = findByText(model.root, "Source [[#^t1]] [[#^t2]]");
+		const target1 = findByText(model.root, "Target 1");
+		const target2 = findByText(model.root, "Target 2");
+		expect(source.resolvedRelations).toEqual([
+			{ kind: "same-doc", linkKind: "wikilink", rawTarget: "#^t1", targetId: target1.id },
+			{ kind: "same-doc", linkKind: "wikilink", rawTarget: "#^t2", targetId: target2.id },
+		]);
+		expect(active).toEqual([
+			{ sourceId: source.id, targetId: target1.id },
+			{ sourceId: source.id, targetId: target2.id },
+		]);
+	});
+
+	it("appendLinkText-built multi-relation text round-trips through resolveRelations the same way", () => {
+		const md = ["# Root", "## Source", "## Target 1 ^t1", "## Target 2 ^t2"].join("\n");
+		const model = parseMindMap(md, "fallback");
+		const source = findByText(model.root, "Source");
+		source.text = appendLinkText(source.text, buildLinkText({ label: "Target 1", kind: "wikilink", target: "#^t1" }));
+		source.text = appendLinkText(source.text, buildLinkText({ label: "Target 2", kind: "wikilink", target: "#^t2" }));
+		expect(source.text).toBe("Source → [[#^t1|Target 1]] → [[#^t2|Target 2]]");
+
+		const active = resolveRelations(model, "fallback");
+		expect(active.map((r) => r.sourceId)).toEqual([source.id, source.id]);
+		expect(source.resolvedRelations?.map((r) => r.kind)).toEqual(["same-doc", "same-doc"]);
+	});
+});
+
+describe("listNodeLinkItems (R3/R5 relation/link modal item list)", () => {
+	it("returns N rows for N existing links, in text order, with a correct occurrenceIndex each", () => {
+		const md = ["# Root", "## Source [[#^t1]] [[#^t2]] [ref](https://example.com)", "## Target 1 ^t1", "## Target 2 ^t2"].join("\n");
+		const model = parseMindMap(md, "fallback");
+		resolveRelations(model, "fallback");
+		const source = findByText(model.root, "Source [[#^t1]] [[#^t2]] [ref](https://example.com)");
+
+		const items = listNodeLinkItems(source, model, "fallback");
+		expect(items).toHaveLength(3);
+		expect(items.map((i) => i.occurrenceIndex)).toEqual([0, 1, 2]);
+	});
+
+	it("correctly identifies each item's badge/occurrence when same-doc, cross-doc, and plain/unresolved links are mixed (no off-by-one)", () => {
+		const md = ["# Root", "## Source [[#^t1]] [[Other Note]] [[#Some Heading]] [ref](https://example.com)", "## Target 1 ^t1"].join("\n");
+		const model = parseMindMap(md, "fallback");
+		resolveRelations(model, "fallback");
+		const source = findByText(model.root, "Source [[#^t1]] [[Other Note]] [[#Some Heading]] [ref](https://example.com)");
+		const target1 = findByText(model.root, "Target 1");
+
+		const items = listNodeLinkItems(source, model, "fallback");
+		expect(items).toHaveLength(4);
+
+		expect(items[0]).toMatchObject({ occurrenceIndex: 0, badge: "same-doc", rawTarget: "#^t1" });
+		expect(items[0].relation).toEqual({ kind: "same-doc", linkKind: "wikilink", rawTarget: "#^t1", targetId: target1.id });
+
+		expect(items[1]).toMatchObject({ occurrenceIndex: 1, badge: "cross-doc", rawTarget: "Other Note" });
+
+		expect(items[2]).toMatchObject({ occurrenceIndex: 2, badge: "unresolved", rawTarget: "#Some Heading" });
+		expect(items[2].relation).toBeNull();
+
+		expect(items[3]).toMatchObject({ occurrenceIndex: 3, badge: "external", rawTarget: "https://example.com" });
+	});
+
+	it("removing item at a given occurrenceIndex via removeLinkOccurrence leaves the remaining items correct after re-listing", () => {
+		const md = ["# Root", "## Source [[#^t1]] [[Other Note]]", "## Target 1 ^t1"].join("\n");
+		const model = parseMindMap(md, "fallback");
+		resolveRelations(model, "fallback");
+		const source = findByText(model.root, "Source [[#^t1]] [[Other Note]]");
+
+		const before = listNodeLinkItems(source, model, "fallback");
+		expect(before).toHaveLength(2);
+
+		source.text = removeLinkOccurrence(source.text, 0);
+		resolveRelations(model, "fallback");
+
+		const after = listNodeLinkItems(source, model, "fallback");
+		expect(after).toHaveLength(1);
+		expect(after[0]).toMatchObject({ occurrenceIndex: 0, badge: "cross-doc", rawTarget: "Other Note" });
+	});
+
+	it("returns an empty list for a node with no links", () => {
+		const md = ["# Root", "## Plain node"].join("\n");
+		const model = parseMindMap(md, "fallback");
+		resolveRelations(model, "fallback");
+		expect(listNodeLinkItems(findByText(model.root, "Plain node"), model, "fallback")).toEqual([]);
 	});
 });

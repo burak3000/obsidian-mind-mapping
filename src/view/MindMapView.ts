@@ -12,10 +12,22 @@ import { collectVisibleNodes } from "../model/visibility";
 import { assignMissingColors } from "../render/colors";
 import { assignMissingSides } from "../layout/sides";
 import { ensurePersistentIds, forcePersistentId } from "../sync/metadata";
-import { LinkKind, buildLinkText, getDisplayText, getImageEmbed, getSoleLink } from "../model/links";
-import { MindNode } from "../model/types";
-import { resolveRelations } from "../model/relations";
-import { LinkModal, RelationTargetOption } from "./LinkModal";
+import {
+	LinkKind,
+	appendLinkText,
+	buildLinkText,
+	getDisplayText,
+	getImageEmbed,
+	isUrlTarget,
+	isAbsoluteFilesystemPath,
+	normalizeUrlTarget,
+	expandHomePath,
+	removeLinkOccurrence,
+} from "../model/links";
+import { MindMapModel, MindNode } from "../model/types";
+import { listNodeLinkItems, resolveRelations } from "../model/relations";
+import { LinkModal, RelationTarget, RelationTargetOption, DocumentOption } from "./LinkModal";
+import { CURRENT_DOCUMENT_ID, commitForeignRelationTarget, resolveRelationTargetsForDocument } from "../sync/foreignRelation";
 import { SearchPanel } from "./SearchPanel";
 import { searchNodes } from "../model/search";
 import { MindMapSettings } from "../settings/PluginSettings";
@@ -42,6 +54,8 @@ export class MindMapView extends TextFileView implements ControllerListener {
 	private controller: Controller | null = null;
 	private renderer: SvgRenderer | null = null;
 	private inlineEditor: InlineEditor | null = null;
+	/** F3: the node `inlineEditor` is currently editing, kept in sync with `inlineEditor` itself (set together, cleared together) so the viewport-change handler knows which node's screen rect to recompute. Null whenever `inlineEditor` is null. */
+	private editingNodeId: string | null = null;
 	private searchPanel: SearchPanel | null = null;
 	private lastWrittenText = "";
 	/** The last markdown text *we* wrote to the OS clipboard (tree copy, plan item 06) — paste compares against this to tell "internal copy/cut" apart from "user copied something else outside the plugin". */
@@ -90,6 +104,7 @@ export class MindMapView extends TextFileView implements ControllerListener {
 		this.scheduleWrite.cancel();
 		this.inlineEditor?.destroy();
 		this.inlineEditor = null;
+		this.editingNodeId = null;
 		this.searchPanel?.destroy();
 		this.searchPanel = null;
 		this.renderer?.destroy();
@@ -138,6 +153,7 @@ export class MindMapView extends TextFileView implements ControllerListener {
 
 		this.inlineEditor?.destroy();
 		this.inlineEditor = null;
+		this.editingNodeId = null;
 		this.searchPanel?.destroy();
 		this.searchPanel = null;
 		this.controller = new Controller(model);
@@ -161,6 +177,7 @@ export class MindMapView extends TextFileView implements ControllerListener {
 		this.renderer.setManualMoveHandler((id, pos) => this.controller?.setManualPosition(id, pos));
 		this.renderer.setReorderHandler((id, targetId, position) => this.controller?.moveNode(id, targetId, position));
 		this.renderer.setManualWidthHandler((id, width) => this.controller?.setManualWidth(id, width));
+		this.renderer.setViewportChangeHandler(() => this.repositionInlineEditorForViewport());
 		this.renderer.mount(model, activeRelations);
 	}
 
@@ -232,6 +249,7 @@ export class MindMapView extends TextFileView implements ControllerListener {
 			fontSize,
 			onCommit: (text) => {
 				this.inlineEditor = null;
+				this.editingNodeId = null;
 				this.controller?.commitRename(nodeId, text);
 				this.controller?.select(nodeId);
 				// Committing can grow the node (empty -> real, possibly
@@ -246,38 +264,153 @@ export class MindMapView extends TextFileView implements ControllerListener {
 			},
 			onCancel: () => {
 				this.inlineEditor = null;
+				this.editingNodeId = null;
 				this.contentEl.focus();
 			},
 			onCommitAndCreateChild: (text) => {
 				this.inlineEditor = null;
+				this.editingNodeId = null;
 				this.controller?.commitRename(nodeId, text);
 				this.controller?.select(nodeId);
 				this.controller?.addChildToSelected();
 			},
 		});
+		this.editingNodeId = nodeId;
+	}
+
+	/**
+	 * F3: fired once per applied viewport frame (see
+	 * `SvgRenderer.setViewportChangeHandler`'s doc comment) — re-syncs the
+	 * open inline editor's on-screen position (and font size) to the node it
+	 * is editing, since panning/zooming moves the node underneath the
+	 * overlay without the overlay knowing. No-ops immediately whenever no
+	 * editor is open (the common case, including every frame of ordinary
+	 * pan/zoom with nothing being edited), so this adds no cost outside an
+	 * active edit session.
+	 */
+	private repositionInlineEditorForViewport(): void {
+		if (!this.inlineEditor || !this.editingNodeId || !this.controller || !this.renderer) return;
+		const rect = this.renderer.getNodeScreenRect(this.editingNodeId);
+		// The node being edited was visible when the editor opened, but an
+		// extreme pan can cull it back out of the DOM before its box is
+		// re-created (see `getNodeScreenRect`'s doc comment / `lastLayout`
+		// pruning in `recull`) — skip repositioning this frame rather than
+		// crash or fight the DOM; the next applied frame (e.g. panning back)
+		// will pick it up again once the node re-enters the culled set.
+		if (!rect) return;
+		const node = this.controller.model.byId.get(this.editingNodeId);
+		const fontSize = node ? this.renderer.getNodeEditMetrics(node).fontSize : undefined;
+		this.inlineEditor.reposition(rect, fontSize);
 	}
 
 	// --- Links (R5) ---
 
-	private openLink(kind: LinkKind, target: string): void {
-		if (kind === "wikilink") {
-			this.app.workspace.openLinkText(target, this.file?.path ?? "", false);
-			return;
-		}
-		// mdlink: an external URL opens in the system browser; anything else
-		// is treated as a vault-relative path (note, attachment, etc.) and
-		// resolved the same way a wikilink would be.
-		if (/^[a-z][a-z0-9+.-]*:\/\//i.test(target)) {
-			window.open(target, "_blank");
-		} else {
-			this.app.workspace.openLinkText(target, this.file?.path ?? "", false);
+	/**
+	 * Lazily resolves Electron's `shell` (`openExternal`/`openPath`) —
+	 * `require("electron")` only works on desktop (Obsidian mobile has no
+	 * Node/Electron underneath at all), so this is called from inside
+	 * `openLink`/`openImage`, never at module load time, and guarded so a
+	 * mobile session degrades to `window.open` for URLs and a `Notice` for
+	 * filesystem paths instead of crashing plugin load. `electron` is
+	 * already marked `external` in esbuild.config.mjs (never bundled) —
+	 * this is the runtime counterpart of that, resolved by Obsidian's own
+	 * process, same as every other Obsidian community plugin that opens
+	 * local files/folders.
+	 */
+	private getElectronShell(): { openExternal(url: string): Promise<void>; openPath(path: string): Promise<string> } | null {
+		try {
+			return (require("electron") as { shell: { openExternal(url: string): Promise<void>; openPath(path: string): Promise<string> } }).shell;
+		} catch {
+			return null;
 		}
 	}
 
-	/** R-image-display, decision A: clicking a node's image thumbnail opens the image — in a new tab, unlike `openLink`, so the mind map stays open (same reasoning as "Go to note section" always opening in a new tab). */
+	/** Node's `os.homedir()`, resolved the same lazy/guarded way as `getElectronShell` (unavailable on mobile). */
+	private getHomeDir(): string | null {
+		try {
+			return (require("os") as { homedir(): string }).homedir();
+		} catch {
+			return null;
+		}
+	}
+
+	/**
+	 * Opens a URL (with or without an explicit scheme — `normalizeUrlTarget`
+	 * adds `https://` when needed) in the system's default browser via
+	 * Electron's `shell.openExternal`, falling back to `window.open` where
+	 * Electron isn't available (mobile).
+	 */
+	private openExternalUrl(target: string): void {
+		const url = normalizeUrlTarget(target);
+		const shell = this.getElectronShell();
+		if (shell) {
+			shell.openExternal(url).catch(() => new Notice(`Couldn't open ${url}`));
+		} else {
+			window.open(url, "_blank");
+		}
+	}
+
+	/**
+	 * Opens an absolute filesystem path via `shell.openPath` — Electron's
+	 * own behavior already covers both halves of the request this
+	 * implements: a *file* path opens in its OS-registered default app, and
+	 * a *folder* path opens in the system file browser (Finder/Explorer/
+	 * whatever the Linux desktop's default is) — no separate file-vs-folder
+	 * branch needed, `shell.openPath` picks the right one for whatever the
+	 * path actually is. `~`/`~/…` is expanded first since `shell.openPath`
+	 * doesn't do that itself.
+	 */
+	private openFilesystemPath(target: string): void {
+		const shell = this.getElectronShell();
+		if (!shell) {
+			new Notice("Opening local files/folders isn't supported on this platform.");
+			return;
+		}
+		const homeDir = this.getHomeDir();
+		const resolved = homeDir ? expandHomePath(target, homeDir) : target;
+		shell.openPath(resolved).then((result) => {
+			if (result) new Notice(`Couldn't open "${target}": ${result}`);
+		});
+	}
+
+	/**
+	 * Three target shapes, three destinations (matching the original note's
+	 * "web url / file path / folder" spec for the Link type): a URL
+	 * (`isUrlTarget` — scheme or bare domain) opens in the system browser; an
+	 * absolute filesystem path (`isAbsoluteFilesystemPath` — `/…`, `~/…`,
+	 * `C:\…`) opens via the OS (file → default app, folder → file browser,
+	 * both via `shell.openPath`); anything else is a vault-relative
+	 * note/attachment reference, resolved through Obsidian's own
+	 * `openLinkText` exactly as before. Checked in that order, ahead of the
+	 * `kind` the link happens to be stored as — a URL or absolute path
+	 * stored as `kind: "wikilink"` (typed directly as `[[https://…]]`, or
+	 * entered into the modal with "Wikilink" left selected) must still open
+	 * correctly rather than trying to create/open a vault note named after
+	 * it (the originally reported bug).
+	 */
+	private openLink(kind: LinkKind, target: string): void {
+		if (isUrlTarget(target)) {
+			this.openExternalUrl(target);
+			return;
+		}
+		if (isAbsoluteFilesystemPath(target)) {
+			this.openFilesystemPath(target);
+			return;
+		}
+		// wikilink, or an mdlink whose target isn't a URL/absolute path: a
+		// vault-relative reference (note, attachment, etc.), resolved the
+		// same way regardless of `kind`.
+		this.app.workspace.openLinkText(target, this.file?.path ?? "", false);
+	}
+
+	/** R-image-display, decision A: clicking a node's image thumbnail opens the image — in a new tab, unlike `openLink`, so the mind map stays open (same reasoning as "Go to note section" always opening in a new tab). Same target-shape routing as `openLink`. */
 	private openImage(kind: LinkKind, target: string): void {
-		if (kind === "mdlink" && /^[a-z][a-z0-9+.-]*:\/\//i.test(target)) {
-			window.open(target, "_blank");
+		if (isUrlTarget(target)) {
+			this.openExternalUrl(target);
+			return;
+		}
+		if (isAbsoluteFilesystemPath(target)) {
+			this.openFilesystemPath(target);
 			return;
 		}
 		this.app.workspace.openLinkText(target, this.file?.path ?? "", true);
@@ -307,25 +440,56 @@ export class MindMapView extends TextFileView implements ControllerListener {
 		return text.length > 48 ? `${text.slice(0, 48)}…` : text;
 	}
 
+	/** R4: true if `path` is open in some other leaf right now — a cheap `iterateAllLeaves` scan, only ever run at "Add relation" commit time (not a hot path), used to warn rather than silently race a foreign-file write against unsaved edits sitting in that pane. */
+	private isFileOpenElsewhere(path: string): boolean {
+		let found = false;
+		this.app.workspace.iterateAllLeaves((leaf) => {
+			const view = leaf.view as unknown as { file?: TFile };
+			if (view?.file?.path === path) found = true;
+		});
+		return found;
+	}
+
 	/**
-	 * Ctrl/Cmd+Shift+L (R5, extended by R1a item 6; moved off Ctrl/Cmd+K —
-	 * see the keydown handler): besides the existing free-text
-	 * wikilink/URL editor, offers a dropdown of every other node in this map
-	 * as a same-document relation target. Picking one forces that target to
-	 * have a persistent block id *before* building the link text
-	 * (`forcePersistentId` — see its own doc comment in sync/metadata.ts for
-	 * why minting has to happen here, at authoring time, rather than being
-	 * left to the next `ensurePersistentIds` pass), then writes `[[#^id]]`
-	 * to the source node via the same `commitRename` path every other edit
-	 * here already uses (undo/redo, debounced write-back, all unchanged).
+	 * Ctrl/Cmd+Shift+L (R3/R5, extended by R1a item 6 and R4; moved off
+	 * Ctrl/Cmd+K — see the keydown handler): lists every relation/link
+	 * already on the node (`listNodeLinkItems`), each individually
+	 * removable, plus a radio-gated add flow — *Document relation* (R4:
+	 * pick any vault `.md` file, D6, then a node inside it — the current
+	 * document is pre-selected and stays fully in-memory/instant, exactly
+	 * as before R4) or *Link* (the original free-text wikilink/URL/path
+	 * editor).
+	 *
+	 * Adding a same-document relation forces the target to have a
+	 * persistent block id first (`forcePersistentId` — see its own doc
+	 * comment in sync/metadata.ts for why minting has to happen here, at
+	 * authoring time, rather than being left to the next
+	 * `ensurePersistentIds` pass), then *appends* `[[#^id]]` to the source
+	 * node's text (D7: visible append, `appendLinkText`) rather than
+	 * replacing it — what lets one node carry multiple relations (R5).
+	 *
+	 * Adding a **foreign**-document relation (R4) does the equivalent for a
+	 * file that isn't open in this view: `resolveRelationTargetsForDocument`
+	 * (sync/foreignRelation.ts) lazily reads+parses a newly selected
+	 * document once per modal session (cached in `foreignModelCache`,
+	 * scoped to this method's closure — never touching the layout/render
+	 * hot path or the current file's own debounced write pipeline); on Add,
+	 * `commitForeignRelationTarget` re-reads that file **fresh** (not the
+	 * picker-time cache — it may have changed), locates the same node by
+	 * structural position (ids aren't stable across two separate parses of
+	 * the same text, see that function's doc comment), and writes the file
+	 * back only if a new persistent id actually had to be minted — relating
+	 * to an already-referenced foreign node is a zero-write no-op.
+	 *
+	 * Every add/remove commits immediately via the same `commitRename` path
+	 * every other edit here already uses (undo/redo, debounced write-back,
+	 * all unchanged); the modal re-renders its own item list from each
+	 * callback's return value rather than waiting for a final Save.
 	 */
 	private openLinkEditor(nodeId: string): void {
 		if (!this.controller) return;
 		const node = this.controller.model.byId.get(nodeId);
 		if (!node) return;
-		const existing = getSoleLink(node.text);
-		const existingRelation = node.resolvedRelations?.find((r) => r.kind === "same-doc");
-		const relationTargetNode = existingRelation?.targetId ? this.controller.model.byId.get(existingRelation.targetId) : undefined;
 
 		const relationTargets: RelationTargetOption[] = [];
 		const collectTargets = (n: MindNode) => {
@@ -334,31 +498,84 @@ export class MindMapView extends TextFileView implements ControllerListener {
 		};
 		collectTargets(this.controller.model.root);
 
-		// A bare `[[#^id]]` link (no alias) prefills an ugly raw-target label
-		// ("#^id") — when it's a resolved same-doc relation, show the target
-		// node's own text instead, a much more meaningful default.
-		const initialLabel = existing && existingRelation && existing.label === existing.target && relationTargetNode ? this.relationOptionLabel(relationTargetNode) : (existing?.label ?? node.text);
+		// R4: every vault .md file (D6 — not frontmatter-filtered), current
+		// document first/pre-selected. Parsed foreign-file models are cached
+		// here, scoped to this modal's lifetime (a fresh Map each time the
+		// modal opens; nothing persists it beyond this closure).
+		const documents: DocumentOption[] = [
+			{ id: CURRENT_DOCUMENT_ID, label: `${this.file?.basename ?? "this document"} (current)` },
+			...this.app.vault
+				.getMarkdownFiles()
+				.filter((f) => f.path !== this.file?.path)
+				.map((f) => ({ id: f.path, label: f.basename })),
+		];
+		const foreignModelCache = new Map<string, MindMapModel>();
+
+		const fileBasename = this.file?.basename ?? null;
+		const currentItems = () => (this.controller ? listNodeLinkItems(node, this.controller.model, fileBasename) : []);
 
 		new LinkModal(this.app, {
-			initialLabel,
-			initialKind: existing?.kind ?? "wikilink",
-			initialTarget: existing?.target ?? "",
-			hasExistingLink: existing !== null,
+			items: currentItems(),
+			documents,
 			relationTargets,
-			initialRelationTargetNodeId: existingRelation?.targetId,
-			onSave: (result) => {
-				if (result.relationTargetNodeId) {
-					const targetNode = this.controller?.model.byId.get(result.relationTargetNodeId);
-					if (targetNode && this.controller) {
-						const id = forcePersistentId(targetNode, this.controller.model.byId);
-						this.controller.commitRename(nodeId, buildLinkText({ label: result.label, kind: "wikilink", target: `#^${id}` }));
-					}
-					return;
+			getRelationTargetsForDocument: (docId) =>
+				resolveRelationTargetsForDocument(docId, relationTargets, {
+					vault: this.app.vault,
+					resolveFile: (path) => {
+						const f = this.app.vault.getAbstractFileByPath(path);
+						return f instanceof TFile ? f : null;
+					},
+					models: foreignModelCache,
+					labelFor: (n) => this.relationOptionLabel(n),
+				}),
+			onAddRelation: async (target: RelationTarget, label: string) => {
+				if (!this.controller) return currentItems();
+
+				if (target.kind === "current") {
+					const targetNode = this.controller.model.byId.get(target.nodeId);
+					if (!targetNode) return currentItems();
+					const id = forcePersistentId(targetNode, this.controller.model.byId);
+					const linkText = buildLinkText({ label, kind: "wikilink", target: `#^${id}` });
+					this.controller.commitRename(nodeId, appendLinkText(node.text, linkText));
+					return currentItems();
 				}
-				this.controller?.commitRename(nodeId, buildLinkText(result));
+
+				// R4: foreign-file target — a one-off read-modify-write outside
+				// the current file's live debounced pipeline.
+				const cachedModel = foreignModelCache.get(target.filePath);
+				const pickerNode = cachedModel?.byId.get(target.nodeId);
+				const foreignFile = this.app.vault.getAbstractFileByPath(target.filePath);
+				if (!pickerNode || !(foreignFile instanceof TFile)) return currentItems();
+
+				if (this.isFileOpenElsewhere(target.filePath)) {
+					new Notice(`"${foreignFile.basename}" is open in another pane — relate carefully, it may have unsaved changes not reflected here.`);
+				}
+
+				const result = await commitForeignRelationTarget(this.app.vault, foreignFile, pickerNode);
+				if (!result) return currentItems(); // foreign file changed shape since the picker was populated; nothing safe to link to
+				const linkText = buildLinkText({ label, kind: "wikilink", target: `${foreignFile.basename}#^${result.targetId}` });
+				this.controller.commitRename(nodeId, appendLinkText(node.text, linkText));
+				return currentItems();
 			},
-			onRemove: () => {
-				if (existing) this.controller?.commitRename(nodeId, existing.label);
+			onAddLink: (kind, target, label) => {
+				if (!this.controller) return currentItems();
+				// A URL or absolute filesystem path is always built as an mdlink,
+				// regardless of which "Link type" the user left selected — a
+				// wikilink pointed at either (e.g. Target left as "Wikilink" while
+				// pasting a URL/path in) would otherwise round-trip as
+				// `[[https://...]]`/`[[/Users/...]]`, which both looks wrong in the
+				// raw markdown and used to make Cmd/Ctrl+click try to create a note
+				// named after it (see `openLink`'s matching defensive check for
+				// links that already exist in this shape).
+				const finalKind: LinkKind = isUrlTarget(target) || isAbsoluteFilesystemPath(target) ? "mdlink" : kind;
+				const linkText = buildLinkText({ label, kind: finalKind, target });
+				this.controller.commitRename(nodeId, appendLinkText(node.text, linkText));
+				return currentItems();
+			},
+			onRemoveItem: (occurrenceIndex) => {
+				if (!this.controller) return currentItems();
+				this.controller.commitRename(nodeId, removeLinkOccurrence(node.text, occurrenceIndex));
+				return currentItems();
 			},
 			onClose: () => this.contentEl.focus(),
 		}).open();
@@ -685,6 +902,15 @@ export class MindMapView extends TextFileView implements ControllerListener {
 			// Mod+Shift+B — see DECISIONS.md).
 			evt.preventDefault();
 			if (this.controller.selectedId) this.openLinkEditor(this.controller.selectedId);
+		} else if (mod && evt.shiftKey && evt.key.toLowerCase() === "g") {
+			// Keyboard equivalent of the context menu's "Go to note section"
+			// item. Not known to collide with anything in this plugin or an
+			// Obsidian core default at the time this was added — same caveat
+			// as every other Mod+Shift binding here (only Obsidian's own live
+			// hotkey registry can't be checked from code); rebind the same way
+			// Mod+K -> Mod+Shift+L was resolved if it turns out to clash.
+			evt.preventDefault();
+			if (this.controller.selectedId) this.goToNoteSection(this.controller.selectedId);
 		} else if (mod && evt.key.toLowerCase() === "c") {
 			evt.preventDefault();
 			this.controller.copySelected();

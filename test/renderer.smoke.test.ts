@@ -4,11 +4,12 @@
 // This is NOT visual verification — jsdom doesn't paint or lay out pixels,
 // so colors/sizes/positions on screen must still be checked manually in
 // the dev vault (see CLAUDE.md).
-import { afterEach, describe, expect, it } from "vitest";
+import { afterEach, describe, expect, it, vi } from "vitest";
 import { parseMindMap } from "../src/sync/parser";
 import { computeLayout, DEFAULT_LAYOUT_CONFIG, fontSizeForDepth, scaleForDepth } from "../src/layout/layoutEngine";
 import { assignMissingSides } from "../src/layout/sides";
 import { SvgRenderer } from "../src/render/SvgRenderer";
+import { InlineEditor } from "../src/view/InlineEditor";
 
 describe("SvgRenderer", () => {
 	it("mount() creates one .mm-node per visible node and one .mm-edge per parent-child edge", () => {
@@ -1254,6 +1255,92 @@ describe("SvgRenderer", () => {
 		expect(after).toContain("scale(1)"); // unchanged — panned, not zoomed
 		// tx/ty shift by -deltaX/-deltaY: container defaults to 0-width in jsdom, so tx/ty start at 0.
 		expect(after).toContain("translate(-30, -40)");
+
+		renderer.destroy();
+	});
+
+	// F3: SvgRenderer's viewport-change hook is what MindMapView subscribes to
+	// so an open inline editor can track its node during pan/zoom. MindMapView
+	// itself needs the real Obsidian API and isn't unit-instantiable (see
+	// PROGRESS-relations-and-ux-fixes.md), so these tests mirror its wiring
+	// directly against SvgRenderer + InlineEditor instead.
+	it("firing the viewport-change hook (fired once per applied frame) repositions an open inline editor to the recomputed rect", async () => {
+		const model = parseMindMap(["# Root", "## Branch A"].join("\n"), "fallback");
+		computeLayout(model.root);
+		const branch = model.root.children[0];
+
+		const container = document.createElement("div");
+		const renderer = new SvgRenderer(container);
+		renderer.mount(model);
+		const svg = container.querySelector(".mm-svg")!;
+
+		const initialRect = renderer.getNodeScreenRect(branch.id)!;
+		const editor = new InlineEditor(container, {
+			initialText: branch.text,
+			rect: initialRect,
+			onCommit: () => {},
+			onCancel: () => {},
+			onCommitAndCreateChild: () => {},
+		});
+		const input = container.querySelector("textarea") as HTMLTextAreaElement;
+		expect(input.style.left).toBe(`${initialRect.left}px`);
+
+		// Mock getNodeScreenRect to return a moved rect, standing in for
+		// "the transform changed underneath the node" without needing the
+		// wheel deltas to land on an exact recomputed value.
+		const movedRect = { left: initialRect.left + 123, top: initialRect.top + 45, width: initialRect.width, height: initialRect.height };
+		const getNodeScreenRectSpy = vi.spyOn(renderer, "getNodeScreenRect").mockReturnValue(movedRect);
+
+		// Mirror MindMapView.repositionInlineEditorForViewport: while the
+		// editor is open for `branch.id`, each applied-frame callback
+		// recomputes the node's screen rect and pushes it into the editor.
+		const editingNodeId: string | null = branch.id;
+		renderer.setViewportChangeHandler(() => {
+			if (!editingNodeId) return;
+			const rect = renderer.getNodeScreenRect(editingNodeId);
+			if (!rect) return;
+			editor.reposition(rect);
+		});
+
+		svg.dispatchEvent(new WheelEvent("wheel", { deltaX: 30, deltaY: 40, ctrlKey: false, bubbles: true, cancelable: true }));
+		// Not yet applied — scheduleApplyViewport batches to the next rAF.
+		expect(getNodeScreenRectSpy).not.toHaveBeenCalled();
+
+		await new Promise((r) => requestAnimationFrame(r));
+
+		expect(getNodeScreenRectSpy).toHaveBeenCalledWith(branch.id);
+		expect(input.style.left).toBe(`${movedRect.left}px`);
+		expect(input.style.top).toBe(`${movedRect.top}px`);
+
+		editor.destroy();
+		renderer.destroy();
+	});
+
+	it("no inline editor open -> firing the viewport-change hook never calls getNodeScreenRect", async () => {
+		const model = parseMindMap(["# Root", "## Branch A"].join("\n"), "fallback");
+		computeLayout(model.root);
+
+		const container = document.createElement("div");
+		const renderer = new SvgRenderer(container);
+		renderer.mount(model);
+		const svg = container.querySelector(".mm-svg")!;
+
+		const getNodeScreenRectSpy = vi.spyOn(renderer, "getNodeScreenRect");
+
+		// Mirror MindMapView's guard: no editor open means `editingNodeId` is
+		// null, so the callback must return before touching getNodeScreenRect
+		// at all — this is the cheap no-op that keeps F3 at zero cost outside
+		// an active edit session.
+		const editingNodeId: string | null = null;
+		renderer.setViewportChangeHandler(() => {
+			if (!editingNodeId) return;
+			renderer.getNodeScreenRect(editingNodeId);
+		});
+
+		svg.dispatchEvent(new WheelEvent("wheel", { deltaX: 30, deltaY: 40, ctrlKey: false, bubbles: true, cancelable: true }));
+		await new Promise((r) => requestAnimationFrame(r));
+
+		expect(getNodeScreenRectSpy).not.toHaveBeenCalled();
 
 		renderer.destroy();
 	});

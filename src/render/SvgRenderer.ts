@@ -306,6 +306,8 @@ export class SvgRenderer {
 	private onNodeContextMenu: ((nodeId: string, evt: MouseEvent) => void) | null = null;
 	/** Resolves an image embed to a displayable URL — needs `app.metadataCache`/`app.vault`, so it's supplied by the view layer rather than imported here (same reasoning as every other Obsidian-API-dependent callback in this class). */
 	private imageResolver: ((node: MindNode) => string | null) | null = null;
+	/** F3: fired once per applied frame (from `scheduleApplyViewport`'s rAF callback, after the transform is written and `recull()` runs) whenever `tx`/`ty`/`scale` change — never per raw wheel/pointermove event, so this stays batched. Lets the view layer keep an open inline editor glued to its node during pan/zoom without this class knowing an editor exists. */
+	private onViewportChange: (() => void) | null = null;
 
 	private dragNode: { nodeId: string; manual: boolean; startClientX: number; startClientY: number; origX: number; origY: number } | null = null;
 	private resizeNode: { nodeId: string; side: "L" | "R"; startClientX: number; origX: number; origWidth: number } | null = null;
@@ -412,6 +414,11 @@ export class SvgRenderer {
 	/** R2: cross-document relation badge click — the view layer resolves the node's cross-doc relation(s) and opens the target via the existing `openLink` path. */
 	setCrossDocBadgeClickHandler(fn: (nodeId: string) => void): void {
 		this.onCrossDocBadgeClick = fn;
+	}
+
+	/** F3: subscribe to viewport (pan/zoom) changes, fired once per applied frame — see `onViewportChange`'s field doc for why this is batched and not per-event. */
+	setViewportChangeHandler(fn: () => void): void {
+		this.onViewportChange = fn;
 	}
 
 	/** Plain click on empty canvas (not panned) — see `onBackgroundClick`. */
@@ -1165,6 +1172,11 @@ export class SvgRenderer {
 			// write) when it was already active — panning a small map never
 			// pays this cost.
 			this.recull();
+			// F3: once per applied frame, not per raw wheel/pointermove event —
+			// keeps this on the same batched cadence as the transform write
+			// itself. The callback (MindMapView) no-ops immediately when no
+			// inline editor is open, so this is a no-cost call in the common case.
+			this.onViewportChange?.();
 		});
 	};
 

@@ -408,3 +408,66 @@
 	font-size: 13px;
 	color: var(--text-muted);
 }
+
+/* R3/R5: relation/link modal redesign — item list + add flow. */
+
+.mm-link-items {
+	margin-bottom: var(--size-4-3, 12px);
+}
+
+.mm-link-items-empty {
+	padding: var(--size-4-2, 8px) 0;
+	font-size: 13px;
+	color: var(--text-muted);
+}
+
+.mm-link-item .setting-item-name {
+	display: flex;
+	align-items: center;
+	gap: var(--size-4-2, 8px);
+}
+
+.mm-link-item-badge {
+	font-size: 11px;
+	font-weight: 600;
+	text-transform: uppercase;
+	letter-spacing: 0.02em;
+	padding: 1px var(--size-4-1, 4px);
+	border-radius: var(--radius-s, 4px);
+	color: var(--text-muted);
+	background: var(--background-modifier-hover);
+	white-space: nowrap;
+}
+
+.mm-link-item-badge-same-doc {
+	color: var(--text-accent);
+}
+
+.mm-link-item-badge-cross-doc,
+.mm-link-item-badge-external {
+	color: var(--text-normal);
+}
+
+.mm-link-item-badge-unresolved {
+	color: var(--text-error, var(--text-muted));
+}
+
+.mm-link-mode-radio {
+	display: flex;
+	gap: var(--size-4-4, 16px);
+	margin-bottom: var(--size-4-2, 8px);
+}
+
+.mm-link-mode-option {
+	display: flex;
+	align-items: center;
+	gap: var(--size-4-1, 4px);
+	cursor: pointer;
+	font-size: 14px;
+}
+
+.mm-link-empty-note {
+	padding: var(--size-4-1, 4px) 0;
+	font-size: 13px;
+	color: var(--text-muted);
+}

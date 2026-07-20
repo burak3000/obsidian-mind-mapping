@@ -195,6 +195,65 @@ describe("InlineEditor", () => {
 		}
 	});
 
+	it("reposition() updates left/top style to the new rect (F3: pan/zoom tracking)", () => {
+		const host = document.createElement("div");
+		const editor = new InlineEditor(host, {
+			initialText: "x",
+			rect: RECT,
+			onCommit: () => {},
+			onCancel: () => {},
+			onCommitAndCreateChild: () => {},
+		});
+		const input = host.querySelector("textarea") as HTMLTextAreaElement;
+		expect(input.style.left).toBe(`${RECT.left}px`);
+		expect(input.style.top).toBe(`${RECT.top}px`);
+
+		editor.reposition({ left: 250, top: 130, width: 90, height: 30 });
+		expect(input.style.left).toBe("250px");
+		expect(input.style.top).toBe("130px");
+	});
+
+	it("reposition() updates font size when zoom changes it, and re-measures width against the new font", () => {
+		const restore = stubScrollWidth(10);
+		try {
+			const host = document.createElement("div");
+			const editor = new InlineEditor(host, {
+				initialText: "abc",
+				rect: RECT,
+				minWidth: 30,
+				maxWidth: 120,
+				fontSize: 14,
+				onCommit: () => {},
+				onCancel: () => {},
+				onCommitAndCreateChild: () => {},
+			});
+			const input = host.querySelector("textarea") as HTMLTextAreaElement;
+			expect(input.style.fontSize).toBe("14px");
+
+			editor.reposition({ left: 0, top: 0, width: 100, height: 20 }, 21);
+			expect(input.style.fontSize).toBe("21px");
+			// Width still gets re-clamped to [minWidth, maxWidth] after the font
+			// change — resizeWidth() ran again rather than leaving a stale width.
+			expect(input.style.width).toBe("46px"); // "abc": 3 * 10 + 16, within bounds
+		} finally {
+			restore();
+		}
+	});
+
+	it("reposition() is a no-op after commit/destroy — does not throw or resurrect the textarea", () => {
+		const host = document.createElement("div");
+		const editor = new InlineEditor(host, {
+			initialText: "x",
+			rect: RECT,
+			onCommit: () => {},
+			onCancel: () => {},
+			onCommitAndCreateChild: () => {},
+		});
+		editor.destroy();
+		expect(() => editor.reposition({ left: 1, top: 2, width: 3, height: 4 })).not.toThrow();
+		expect(host.querySelector("textarea")).toBeNull();
+	});
+
 	it("destroy() removes the textarea without firing any callback", () => {
 		const onCommit = vi.fn();
 		const onCancel = vi.fn();

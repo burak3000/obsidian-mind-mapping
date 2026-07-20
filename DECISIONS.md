@@ -1,5 +1,588 @@
 # Architectural Decision Records
 
+## 2026-07-20 — Feature: bare-domain URLs, absolute file paths, and folders all open correctly for the "Link" type
+
+**Scope:** Follow-up to the URL-open bug fix below. User reported two more
+gaps in the same area: (1) `https://` had to be typed explicitly — a bare
+domain like `www.youtube.com` failed; (2) the original Tool notes spec for
+the "Link" type ("a web url, file path, folder") was only ever half-built —
+a non-URL target always went through `openLinkText` (vault-relative
+resolution), with no path to opening an arbitrary OS file/folder.
+**Choice:**
+- `model/links.ts`: broadened `isUrlTarget` to also recognize a bare,
+  no-scheme domain shape (`hasBareDomainShape`, gated by a curated
+  `COMMON_BARE_TLDS` list rather than "any 2-24 letter final segment", to
+  keep ordinary dotted file/note names like `config.json` or `Some
+  Note.md` from being misclassified as domains — `.md` deliberately
+  excluded from the TLD list even though it's a real ccTLD, since in an
+  Obsidian vault a `word.md` target overwhelmingly means a note file, not
+  a domain). Added `normalizeUrlTarget` (adds `https://` when a scheme is
+  missing, at *open* time — the stored target text is left exactly as the
+  user typed it) and `isAbsoluteFilesystemPath`/`expandHomePath` (`/…`,
+  `~/…`, `C:\…` detection and `~` expansion, given an injected `homeDir` so
+  the function stays pure/testable).
+- `view/MindMapView.ts`: `openLink`/`openImage` now check target *shape*
+  first (URL → `shell.openExternal`; absolute path → `shell.openPath`),
+  ahead of the link's stored `kind` — a URL or absolute path stored as
+  `kind: "wikilink"` (typed directly, or the modal left on the wrong
+  dropdown option) still has to work, not just the "correctly authored"
+  case. `shell.openPath` alone satisfies *both* halves of "file → default
+  app, folder → file browser" — Electron's own behavior for a directory
+  path already is opening it in Finder/Explorer/the Linux default file
+  manager, so no separate file-vs-folder branch was needed.
+- Electron's `shell` and Node's `os.homedir()` are accessed via a lazy,
+  try/catch-guarded `require(...)` *inside* the methods that need them,
+  never a static top-level `import` — Obsidian mobile has no Node/Electron
+  underneath at all, and a static import failing to resolve at module load
+  time would crash the whole plugin on mobile instead of just this one
+  feature degrading gracefully (falls back to `window.open` for URLs, a
+  `Notice` for filesystem paths).
+- LinkModal's "Link" radio option now defaults its Link-type dropdown to
+  "URL or file path" instead of "Wikilink" — per direct user request, since
+  picking "Link" at all already signals "external resource," not "vault
+  note" (that's what "Document relation" is for).
+**Alternatives considered:** requiring the file/folder distinction to be
+resolved via `fs.statSync` before deciding how to open it — rejected,
+`shell.openPath` already makes that distinction internally and correctly,
+so adding our own stat check would be redundant work for no behavior
+change.
+**Cost:** no new dependency (`electron` is already `external` in
+esbuild.config.mjs, provided by Obsidian's own process at runtime; `os` is
+a Node builtin, same treatment) — zero bundle-size impact. `shell.openPath`
+plus a `homedir()` call is a rare, user-initiated action, not a hot path.
+**Source:** user request, following directly from the URL-open bug fix
+below and the original Tool notes' "link ... can be: a web url, file path,
+folder" spec.
+
+## 2026-07-18 — Bug fix: URL-shaped link targets always open externally, regardless of stored `kind`
+
+**Scope:** User reported Cmd/Ctrl+click on an entered link
+(`[www.youtube.com](https://www.youtube.com)`) tried to create a new vault
+note instead of opening the URL. Root cause: a link's click behavior was
+gated purely on its stored `kind` (`wikilink` → `openLinkText`, `mdlink` +
+URL-shaped target → `window.open`) — but `kind` can end up `wikilink` for a
+URL target in more than one way: typed directly as `[[https://example.com]]`
+(double-bracket syntax doesn't care what's inside), or entered into the
+link editor's Target field with "Wikilink" left selected in the Link-type
+dropdown (its default) instead of switching to "URL or file path". Either
+way, `openLinkText` then treats the whole URL as a note title to
+open/create — the reported bug.
+**Choice:** added `isUrlTarget` (`model/links.ts`, scheme+`://` regex
+already used ad hoc in two other places, now consolidated) and check it
+*first* in both `MindMapView.openLink`/`openImage`, ahead of the `kind`
+branch — a URL-shaped target always opens externally no matter what `kind`
+says, since a real wikilink target can never look like an absolute URL.
+Also applied the same check when *building* a link in the modal's "Add
+link" flow (`onAddLink` in `MindMapView.ts`) so newly authored links don't
+even get written as a URL-shaped wikilink in the first place — belt and
+suspenders, since the click-time fix alone leaves confusing-looking
+`[[https://...]]` markdown behind even though it now behaves correctly.
+**Alternatives considered:** only fixing the modal's authoring path (force
+the dropdown or validate on save) — rejected as incomplete, since it
+wouldn't fix a link already typed directly as `[[https://...]]` node text,
+or any link already existing in a vault before this fix.
+**Cost:** one small regex-based helper, checked before existing branches;
+no new dependency, no measurable perf impact (link click is a rare,
+user-initiated event, not a hot path).
+**Source:** user bug report.
+
+## 2026-07-18 — Rollback: M-R6 reverted, D7 (visible append) is active again
+
+**Scope:** The M-R6 entry directly below this one (separate
+`Associations:`/`Links:` markdown lines) was fully built, tested (395
+tests passing), and reviewed — then the user tried it in the dev vault and
+asked to roll it back: "the approach in the attached image with arrows
+was better," referring to D7's original visible-append screenshot, not
+M-R6's separate-lines result. **D7 (visible append into `node.text`,
+`" → "` separator) is the active behavior again; M-R6 is fully reverted.**
+**Alternatives considered:** none — this was a straight revert to the
+immediately-prior, already-shipped-and-approved design (D7), not a new
+design decision with alternatives to weigh.
+**Cost:** the revert itself was mechanical (traced and undone file-by-file
+by the coordinator directly, no subagent needed) but not risk-free in
+execution — reverse-applying `git diff` for two test files
+(`relations.test.ts`, `relationsRenderer.test.ts`) that Round 2 had
+*also* legitimately extended (not just M-R6) initially wiped out Round 2's
+own additions too, since `git diff` compares against the single last real
+commit, not a "Round 2 complete" checkpoint that was never actually
+committed. Caught via an unexpected test-count drop (370 instead of the
+expected 376) and fixed by restoring from a pre-rollback backup patch and
+rewriting those two files' fixtures back to text-embedded links by hand.
+Lesson for any future multi-round rollback in this project: reverse-applying
+a cumulative diff for a file is only safe when nothing *else* has touched
+that file since the last real commit — verify test counts against the
+known pre-change baseline immediately, not just "tests are green."
+**Source:** user request following manual testing; see
+`plans/PROGRESS-relations-and-ux-fixes.md`'s dated log entry for the full
+per-file revert list, and the Round 3 plan section (kept as a historical
+record, marked rolled-back, not deleted).
+
+## 2026-07-18 — M-R6: separate `Associations:`/`Links:` markdown lines, supersedes D7's append-into-`node.text` (rolled back — see entry above)
+
+**Scope:** Round 3 of the relations/UX plan (`plans/PLAN-relations-and-ux-fixes.md`'s
+"Round 3" section), reacting to a user-reported problem with Round 2's
+D7 ("visible append") decision — appending a relation/link straight onto a
+node's own markdown line (`existing text → [[...|label]]`) reads, in an
+ordinary Obsidian note view (not the mind-map canvas), as one run-on,
+half-underlined sentence mixing the node's own words with everything it's
+related to. Two decisions were resolved by the user before this was built
+(D9: separate lines, not appended to the node's own line; D10: markdown +
+modal only, no canvas rendering change — the CLAUDE.md-rule-3-relevant
+question, resolved rather than decided unilaterally) — see the Round 3 plan
+section and PROGRESS's D9/D10 rows for the full record.
+
+**Choice:** two new optional `MindNode` fields, `relationsRaw?: string` and
+`linksRaw?: string` (`src/model/types.ts`), holding everything the R3/R5
+modal's "Document relation" and "Link" radio options respectively add,
+joined by a `" : "` separator (`model/links.ts`'s `appendLinkText`/
+`removeLinkOccurrence`, repurposed from D7's `" → "`). Serialized as two
+dedicated non-structural lines directly beneath a node's own line —
+`  Associations: [[...]] : [[...]]` / `  Links: https://... : [[...]]` —
+recognized by the parser via `^\s*Associations:\s*(.*)$`/
+`^\s*Links:\s*(.*)$` inside `flushPendingContent` (`sync/parser.ts`),
+peeled out of the batch *before* whatever remains falls through to
+`attachedContent` exactly as before. The node's own `text` field is never
+touched by the modal anymore — it stays whatever plain label the user
+typed (or hand-authored `[[wikilink]]`, which `SvgRenderer`'s existing
+link-click handling on node text still honors — that path is unrelated to
+this feature and untouched).
+
+**Alternatives considered:**
+- Keep D7's append-into-`text` and instead change only how the mind-map
+  canvas *displays* a node's text (e.g. render the arrow-joined parts on
+  separate visual lines within the node box). Rejected: doesn't fix the
+  actual reported problem, which is how the file reads as *plain markdown*
+  outside the plugin — the canvas was never the complaint.
+- Render `Associations:`/`Links:` on the canvas node box too (D10's richer
+  option), sizing `computeNodeBox` around up to 3 stacked text blocks
+  instead of 1 (the same way the image-thumbnail block already does).
+  Rejected per the user's own resolution (D10): no new per-node
+  render/layout cost for this milestone — canvas stays arrows (R1) +
+  cross-doc badges (R2) only, unchanged from before this round.
+- Keep everything on one shared list/field and add a `kind` tag per link
+  occurrence instead of splitting into two physical fields. Rejected:
+  doesn't produce the two separate markdown lines the user actually asked
+  to see (a single field can't independently decide where each of its
+  occurrences serializes to), and would need the same dual-identifier
+  plumbing anyway for per-kind removal.
+
+**What moved as a result (grounded in the actual diff, not just the plan):**
+- `model/relations.ts`: `getCachedRelationLinks` (renamed from
+  `getCachedLinks`) now sources/caches off `node.relationsRaw` instead of
+  `node.text`. `resolveRelations`'s arrow (R1)/cross-doc-badge (R2) output
+  is derived **only** from `relationsRaw` — `linksRaw` is never scanned by
+  it, confirmed by a new test (`test/relations.test.ts`: "a node with only
+  linksRaw set... produces zero arrows/cross-doc badges"). `listNodeLinkItems`
+  (the R3/R5 modal's item list) now sources from *both* fields via a shared
+  `buildLinkItems` helper, tagging each row with a new `LinkItem.list:
+  "relations" | "links"` discriminant — `occurrenceIndex` is now scoped
+  *within* whichever list produced it, not a single flat index across a
+  shared string, since removal must now identify `{list, occurrenceIndex}`
+  to know which of the two independent fields to splice.
+- `sync/serializer.ts`'s `serializeNode` (and `serializeMindMap`'s root
+  special case, symmetrically) emits `Associations:`/`Links:` right after
+  the node's own line and before `attachedContent`/children, at 2 spaces
+  deeper than that node's own line's indent (0 for a heading/root, the
+  list-item indent for a list node) — purely visual, since the parser's
+  recognition regex tolerates arbitrary leading whitespace.
+- `sync/goToSection.ts`'s `findNodeLine` **had to be updated in lockstep**
+  with the serializer's new emission order/count (flagged explicitly in
+  the plan as easy to miss) — both the root special case and the per-node
+  walk now add `(relationsRaw?1:0) + (linksRaw?1:0)` alongside the existing
+  `attachedContent?.length` term. Verified this was in fact necessary, not
+  a hypothetical: a test with an earlier sibling carrying both fields and
+  no fix applied landed one line short on the later sibling.
+- `model/mutations.ts`'s `cloneSubtree` copies both new fields the same way
+  it already copies `attachedContent` (accepted quirk, not a bug: a pasted
+  copy's relation target id can now be duplicated, same as any other
+  duplicated block id elsewhere in this codebase already behaves).
+- `controller/Controller.ts` gained `commitRelationsRaw`/`commitLinksRaw`
+  (new `mutations.ts` functions `setRelationsRaw`/`setLinksRaw`), parallel
+  to `commitRename` — same undo/redo-via-inverse-closure plumbing, just a
+  different target field, normalizing a fully-emptied value to `undefined`
+  so removing the last item doesn't leave a stray empty `Associations:`
+  line. `view/MindMapView.ts`'s `openLinkEditor` and `view/LinkModal.ts`
+  were adapted (not rewritten) to commit through these instead of
+  `commitRename`, and to identify removals by the new `{list,
+  occurrenceIndex}` pair.
+
+**Performance:** no change to the layout/render hot path — this is
+parser/serializer/modal-local text bookkeeping only, same cost class as
+`attachedContent` already was. `resolveRelations`'s per-node scan checks
+one field (`relationsRaw`) instead of `text`, still gated by the same
+cheap "no `[`" fast path; `linksRaw` is never touched by it at all. No new
+performance-vs-anything trade-off surfaced during implementation — the two
+perf-adjacent questions for this milestone (where the data lives, whether
+it renders on canvas) were both already resolved by the user (D9/D10)
+before work started, matching CLAUDE.md rule 3.
+
+**Tests:** 395 total, up from 376 — `test/parser.test.ts` (+7:
+Associations:/Links: recognition in either order, one/neither present, the
+documented prose-line ambiguity), `test/serializer.test.ts` (+4: byte-exact
+round-trip including a deeper list node and the root's own lines),
+`test/goToSection.test.ts` (+3: line-count correctness with one/both
+fields present, including on the root), `test/relations.test.ts` (rewritten
+to source relations from `relationsRaw` via real `Associations:` fixtures
+rather than embedding links in node text, +2 net new cases: linksRaw-only
+produces no arrows, cross-field removal isolation), `test/links.test.ts`
+(separator updated to `" : "`), `test/controller.test.ts` (+4:
+`commitRelationsRaw`/`commitLinksRaw` behavior + a `cloneSubtree` copy
+check), `test/foreignRelation.test.ts` (1 existing test's fixture updated
+to embed the cross-doc link via an `Associations:` line instead of node
+text — the R4 foreign-write logic itself is unaffected by this milestone,
+confirmed by inspection: it operates on the *target* node in the foreign
+file regardless of which field the *source*'s reference lives in).
+`npm run build` typechecks clean. Rebuilt into dev-vault (`npm run dev`,
+left running in the background per the established pattern). Not
+committed (user reviews/commits).
+
+## 2026-07-18 — Fix: cross-doc relation-target durability across independent resaves (closes M-R4 gap)
+
+**Scope:** the durability gap flagged (not fixed) by M-R4 below — the user
+was asked "fix it now vs. ship as-is" and chose fix it now.
+
+**Problem, restated:** `commitForeignRelationTarget`
+(`src/sync/foreignRelation.ts`) made a cross-doc relation target's
+`^blockid` suffix survive *that one write* by setting
+`targetNode.isRelationTarget = true` right before its single
+`serializeMindMap` call. But `isRelationTarget` is unconditionally reset to
+`false` and re-derived from scratch by `resolveRelations`
+(`src/model/relations.ts`'s `clearFlags`) on every parse, purely from that
+*file's own* link text. A cross-doc target's referencing link lives in the
+*other* file, so a later, independent reparse+resave of the target file
+(e.g. the user opens it as its own mind map next week and edits something
+unrelated) has nothing to re-derive the flag from — it comes back `false`
+and `serializeNode` drops the suffix, silently breaking the relation.
+
+**Fix: reuse the existing `NodeMeta` frontmatter-persistence mechanism
+(`sync/metadata.ts`), not a new one.** `folded`/`manualPos`/`manualWidth`
+already solve exactly this class of problem — "a durable per-node fact
+that must survive every future parse/serialize cycle, independent of
+anything derived from the file's own content." Added one more field to
+that same mechanism:
+- `MindNode.externalRelationTarget?: boolean` (`src/model/types.ts`) — a
+  **separate field from `isRelationTarget`**, not a reuse of it. Reusing
+  `isRelationTarget` was considered and rejected: `resolveRelations`'s
+  `clearFlags` pass resets it to `false` at the start of every walk before
+  anything else in that walk runs, so a value loaded from frontmatter would
+  be stomped immediately, before `nodeHasPersistableMeta` or
+  `ensurePersistentIds`/`serializeNode` ever saw it as `true`.
+- `NodeMeta.externalRef?: boolean` (`src/sync/metadata.ts`) — the
+  frontmatter-side twin, following `folded`/`pos`/`width`'s exact pattern:
+  `hasMeta()` ORs it in, a new `EXTERNAL_REF_RE` regex
+  (`/\bexternalRef:\s*true\b/`) parses it out of a node entry's body in
+  `extractMindmapData()`, `applyMindmapDataToTree()` sets
+  `node.externalRelationTarget = true` from it, and `applyMindmapData()`
+  emits `externalRef: true` in the entry's parts when set.
+- `nodeHasPersistableMeta()` (`src/sync/metadata.ts`) now ORs in
+  `node.externalRelationTarget === true` alongside the existing
+  `isRelationTarget` check — either relation-target flavor keeps the
+  `^blockid` suffix alive.
+- `collectMeta()` (`src/sync/serializer.ts`) emits
+  `externalRef: node.externalRelationTarget || undefined` in the node's
+  `NodeMeta`, same pattern as the other three fields.
+- `commitForeignRelationTarget` (`src/sync/foreignRelation.ts`) now sets
+  `targetNode.externalRelationTarget = true` instead of
+  `targetNode.isRelationTarget = true`. `isRelationTarget` was dropped
+  entirely from this call rather than kept alongside the new field:
+  nothing else in this function's serialize pass depends on it (
+  `resolveRelations` is never invoked in this flow — `parseMindMap` doesn't
+  call it, only `MindMapView.onChange`/mount do), so it would have been
+  dead weight.
+
+**What this does not (and per the plan's explicit scope, should not)
+handle:** no vault-wide reverse index of "which files reference which
+other files' block ids" — the frontmatter-flag approach is self-contained
+per-file and doesn't need one. Also not handled: if the *referencing*
+relation is later removed from the source node, the target file's
+`externalRef: true` flag has no automatic cleanup — it durably persists on
+a node that's no longer actually related to anything. Harmless (a slightly
+premature `^blockid` suffix, nothing breaks) but slightly stale. Flagged
+here as a possible cheap follow-up rather than built: e.g. a future pass
+that only clears `externalRef` when the plugin can positively confirm no
+active source references that id anymore (would require scanning the
+referencing file, not the target file, at reparse time — real scope, not
+attempted here since it's out of what was approved for this fix).
+
+**Tests:** 5 new (376 total, up from 371) — `test/metadata.test.ts` gains
+`extractMindmapData`/`applyMindmapDataToTree` coverage for
+`externalRef`/`externalRelationTarget`, a `nodeHasPersistableMeta` case
+that's true purely from `externalRelationTarget`, and a full
+parse→mark→serialize→**re-parse-as-a-fresh-session** round-trip proving the
+block id and flag survive a second, independent parse with zero shared
+in-memory state from the first. `test/foreignRelation.test.ts`'s existing
+mint-and-write test is extended to re-parse the written-back text a
+*second* and *third* time (simulating the file being reopened/resaved
+independently later) and assert the `^blockid` suffix and
+`externalRelationTarget` still hold — this is the actual regression the
+original test didn't catch (it only checked the first write). 376 tests
+pass; `npm run build` typechecks clean. No performance-vs-anything
+trade-off surfaced (CLAUDE.md rule 3) — same per-node frontmatter
+read/write mechanism already used for fold/pos/width, no new per-file or
+vault-wide scan added.
+
+## 2026-07-18 — Feature (M-R4): cross-document relation authoring (two-step file + node picker)
+
+**Durability gap below is now closed** — see the new 2026-07-18 entry above
+this one for the fix (`MindNode.externalRelationTarget` /
+`NodeMeta.externalRef`). Left the rest of this entry as originally written
+for the historical record.
+
+**Scope:** `plans/PLAN-relations-and-ux-fixes.md`'s R4 — widen the
+M-R3/R5 relation modal's single-document node picker into a two-step
+document + node picker spanning **every vault `.md` file** (D6, resolved:
+not frontmatter-filtered), with a real foreign-file write-back (mint +
+persist a block id in a file that isn't open in this view) gated on "a new
+id was actually minted."
+
+**`RelationTarget` discriminated on a `kind` tag, not a stringly-typed
+`fileId`:** `LinkModal.ts` widened `{ fileId: "current"; nodeId }` (the
+single-member placeholder M-R3/R5 left behind) to `{ kind: "current";
+nodeId } | { kind: "foreign"; filePath; nodeId }`. Considered keeping
+`fileId: "current" | string` per the plan's literal suggested shape, but a
+tag field discriminates cleanly at every call site (`target.kind ===
+"foreign"` exhaustively narrows in TS) where `"current"` overlapping with
+`string` would not.
+
+**New module `src/sync/foreignRelation.ts`**, kept dependency-free of the
+`obsidian` package (matching every other file in `sync/`/`model/` — the
+real `obsidian` package has no runtime JS, `"main": ""` in its
+`package.json`, so nothing there can import it) via a narrow structural
+`MinimalFile { path; basename }` type instead of the real `TFile`. Exposes
+two pure, fully unit-tested functions that `MindMapView.openLinkEditor`
+wires to real `app.vault` calls:
+- `resolveRelationTargetsForDocument(docId, currentDocTargets, ctx)` — R4
+  combobox-2's data source. `CURRENT_DOCUMENT_ID` resolves instantly from
+  `currentDocTargets` with **zero vault calls** (tested by asserting a
+  mock `cachedRead` is never invoked for this id) — this is what keeps the
+  common case (relating within the open document) exactly as fast as
+  before R4. Any other id is read once via `cachedRead` + `parseMindMap`,
+  then cached in a caller-owned `Map<path, MindMapModel>` scoped to one
+  `LinkModal` session (a fresh `Map` per `openLinkEditor` call, GC'd on
+  close) — re-selecting the same document, or re-filtering combobox 1's
+  search query, never re-reads/re-parses it.
+- `commitForeignRelationTarget(vault, file, pickerTimeTargetNode,
+  mintBlockId?)` — the Add-time commit. Re-reads the file **fresh** (not
+  the picker-time cache) since it may have changed since the modal opened.
+
+**Node identity across two separate parses of the same file — structural
+position, not id, via the existing `findEquivalentNode`
+(`sync/reconcile.ts`):** synthetic node ids (`nNN`, `model/id.ts`) are
+minted from a single monotonic counter that is never reset between
+`parseMindMap` calls, so the picker-time parse and the commit-time fresh
+re-parse of the *same* file mint two *different* sets of synthetic ids for
+the same nodes — an id captured when the picker was populated cannot be
+looked up in the fresh model. `findEquivalentNode` (already used to carry
+selection across an external-edit reparse of the *current* file) walks the
+picker-time node's child-index path from its root and replays it against
+the fresh model instead — the same reconciliation primitive, reused
+verbatim rather than inventing a second one. Returns `null` (caller no-ops,
+doesn't crash or write) if the file changed shape enough that the path no
+longer resolves.
+
+**Write-back gate ("did `forcePersistentId` actually mint a new id?"):**
+`forcePersistentId` (`sync/metadata.ts`) returns the id either way (a
+no-op returning the existing id when already non-synthetic) — it does not
+itself report whether it minted. Gated here by checking
+`isSyntheticId(targetNode.id)` **before** calling it: if already
+non-synthetic, skip `vault.modify` entirely (confirmed by test: relating
+to an already-referenced foreign node, or the same node twice, writes
+zero times).
+
+**Discovered gap, fixed narrowly, limitation flagged (not solved) beyond
+this write:** the first attempt at this commit wrote a file whose new id
+was silently **not** persisted — `serializeMindMap`/`serializeNode` only
+emit a node's ` ^blockid` suffix when `nodeHasPersistableMeta` is true
+(fold/pos/width, or `isRelationTarget`), and `isRelationTarget` is normally
+set by `resolveRelations` scanning a file's *own* links. A cross-doc
+target's referencing link lives in the *other* file's node text, so
+nothing in the foreign file's own resolve pass ever marks it — confirmed
+this is pre-existing behavior, reproducible with no R4 code at all (a
+node with a hand-written `^existing` suffix, no fold/pos/width, and no
+same-file relation pointing at it loses the suffix on the very next
+`serializeMindMap`, independent of this feature). Fixed for *this* write
+by setting `targetNode.isRelationTarget = true` immediately before this
+one `serializeMindMap` call. Not fixed: a **later, independent** resave of
+that same foreign file (e.g. the user opens it as its own mind map next
+week and edits something unrelated) reparses from scratch and has no way
+to know the id is still referenced from elsewhere, so it could drop the
+suffix on that save. A full fix needs either a persisted "externally
+referenced" marker in the target file's own frontmatter or a vault-wide
+reverse index — out of scope for this milestone; flagged in the progress
+log for a decision rather than built unilaterally.
+
+**Concurrent-open-pane edge case:** cheaply detectable via
+`app.workspace.iterateAllLeaves`, so it's handled with a warning rather
+than left as a silent race — `MindMapView.isFileOpenElsewhere(path)` scans
+open leaves for a matching `view.file.path` and, if found, shows a
+`Notice` before proceeding with the write anyway (no conflict-resolution
+logic built, per the plan's explicit scope note).
+
+**Tests:** 8 new (371 total, up from 363), `test/foreignRelation.test.ts` —
+all against the pure `sync/foreignRelation.ts` functions with a mock
+`{ cachedRead, modify }` vault double, not by instantiating `LinkModal`
+(still not unit-instantiable, same reason as every prior milestone this
+round). Covers: current-doc resolves with no vault call; foreign-doc
+parses + orders nodes correctly; repeated selection of the same foreign
+doc doesn't re-read/re-parse; unresolvable doc id returns empty; mint +
+write-once + the resulting link classifies as cross-doc via the existing
+`classifyLink`/`resolveRelations` (unchanged); no write when the node
+already has a persistent id, including a second relate-again call; `null`
+return (no write) when the picked node's structural path no longer
+resolves in a changed file. 371 tests pass; `npm run build` typechecks
+clean. Not committed (user reviews/commits).
+
+## 2026-07-18 — Feature (M-R3/R5): relation/link modal redesign, multi-relation authoring
+
+**Scope:** `plans/PLAN-relations-and-ux-fixes.md`'s R3 ("redesign the
+relation/link modal: list existing relations/links + radio-selected add
+flow") and R5 ("a node can carry multiple relations"), tracked as one
+milestone since the list UI is what makes multiplicity possible. D7
+(append format) honored as resolved by the user: **visible** append
+(`"existing text → target label"`), not the invisible/empty-alias option
+the plan's own recommendation favored.
+
+**Append/remove text surgery (`src/model/links.ts`):** `appendLinkText(text,
+linkText)` — `text.trim() ? \`${text} → ${linkText}\` : linkText`, exactly
+the D7 formula, so an empty node gets just the link with no leading arrow.
+`removeLinkOccurrence(text, occurrenceIndex)` — a new helper, *not*
+re-serializing `parseTextSegments`'s output (that only keeps a link's
+display label, discarding its exact source syntax — e.g. an alias or a
+`[label](url)` form couldn't round-trip through it), instead re-running
+`LINK_RE` over the raw text to get each link occurrence's exact
+`[start,end)` span, splicing out the Nth one plus one adjacent `" → "`
+separator (checked before first, then after) so removing one relation from
+a multi-relation node never leaves a dangling arrow on either side.
+
+**Occurrence-index identification (the "which item" question):**
+index-based, not content-based (e.g. not matching by raw link text) —
+chosen because content-based matching breaks the moment two relations
+happen to render the same label, and because the index is trivial to keep
+correct: `listNodeLinkItems` (new, `src/model/relations.ts`) and
+`removeLinkOccurrence` (`src/model/links.ts`) both walk the *same* `LINK_RE`
+match order over the *same* text, so "row 2 in the modal" and
+"`occurrenceIndex: 2`" are always the same link by construction, with no
+separate id-assignment step to keep in sync.
+
+**Why `listNodeLinkItems` reclassifies instead of reusing the
+`node.resolvedRelations` cache:** that cache silently drops the "ignored"
+case (`classifyLink` returning null for a same-file link that isn't a
+resolvable block ref — dangling `#^id`, bare heading link, self-link), so
+its array length can be shorter than the node's actual link-occurrence
+count and its indices don't line up with `removeLinkOccurrence`'s
+occurrence space once anything is dropped. `listNodeLinkItems` instead
+walks `parseTextSegments` directly and calls the same private
+`classifyLink` fresh per occurrence, so every real link occurrence gets a
+row (including "unresolved" ones, still removable) with a correct,
+gap-free `occurrenceIndex`. This re-does a handful of already-cheap
+`classifyLink` calls once per modal-open — not the layout/render hot path,
+not per-keystroke, negligible at that frequency (see `resolveRelations`'s
+own doc comment for why the full-tree walk this piggybacks on is already
+cheap).
+
+**Modal API shape (`src/view/LinkModal.ts`):** `LinkModalOptions` changed
+from one-shot `onSave`/`onRemove` (built up over the modal's lifetime,
+committed on a final "Save") to per-item actions —
+`onAddRelation(target, label)`, `onAddLink(kind, target, label)`,
+`onRemoveItem(occurrenceIndex)` — each commits immediately via the
+existing `commitRename` path (undo/redo, debounced write-back all
+unchanged) and returns the node's refreshed `LinkItem[]`, which the modal
+uses to re-render its own item list in place. A single "Close" button
+replaces "Save"/"Remove link"; there's nothing left to save at the end.
+
+**Document-picker scope (M-R4 handoff):** this milestone's "Document
+relation" add flow is **current-document only** — no document/file
+combobox was built. The relation-target combobox reuses the existing
+in-memory `relationTargets`/`collectTargets` pattern from
+`MindMapView.openLinkEditor` unchanged. The one piece of forward-looking
+scaffolding: `LinkModal.ts`'s new `RelationTarget` type is already a
+discriminated union with a single `"current"` member
+(`{ fileId: "current"; nodeId: string }`), specifically so M-R4 can widen
+it to `{ fileId: string /* vault path */; nodeId: string }` without
+changing `onAddRelation`'s call sites in `MindMapView`. No file-combobox
+UI, foreign-file parsing/caching, or foreign-file write-back exists yet —
+all of that is M-R4, per the plan's own scope split.
+
+**Tests:** 15 new (363 total, up from 348). `test/links.test.ts`:
+`appendLinkText` (non-empty/empty/whitespace-only existing text, double
+append) and `removeLinkOccurrence` (sole link, one-of-two either order,
+first-link-with-no-leading-text edge case, fully-link-only text, and an
+out-of-range index no-op). `test/relations.test.ts`: a same-doc-relation
+regression test for R5 (two `[[#^id]]` links on one node resolve to two
+`activeRelations` entries — already true pre-redesign per the plan's Round
+2 grounding, now explicit/regression-proof); an `appendLinkText`-built
+multi-relation round-trip through `resolveRelations`; and
+`listNodeLinkItems` tests covering N rows for N links, correct
+badge/occurrenceIndex when same-doc + cross-doc + external + unresolved
+links are mixed on one node (the off-by-one case the plan specifically
+flagged), and re-listing after a `removeLinkOccurrence` splice. No test
+directly instantiates `LinkModal` itself: it `extends Modal` from the
+`obsidian` package, which is types-only at runtime (`main: ""` in its
+`package.json`) — same reason `MindMapView` isn't unit-instantiable
+(logged in the M-F3 entry above and the progress tracker's Round 1 notes).
+The item-list/occurrence-index logic that matters for correctness lives in
+`listNodeLinkItems`/`removeLinkOccurrence` instead, which *are* unit
+tested directly; the modal's own rendering is covered by manual dev-vault
+verification only. 363 tests pass; `npm run build` typechecks clean.
+
+## 2026-07-18 — Bug fix (M-F3): inline editor didn't track its node during pan/zoom
+
+**Bug (reported by user):** panning (two-finger trackpad swipe) or
+zooming (ctrl+wheel/pinch) while the inline text editor was open left the
+overlay stranded at its original screen coordinates instead of following
+the node underneath it ("if scrolled horizontally or vertically node
+edit box remains in the beginning position").
+**Root cause:** `InlineEditor`'s `rect`/`fontSize` were constructor-only,
+positioned once from `SvgRenderer.getNodeScreenRect(nodeId)` at
+`MindMapView.openInlineEditor` time. Pan/zoom is handled entirely inside
+`SvgRenderer.onWheel` (plus the background-drag path in `onPointerMove`),
+both of which mutate `view.tx/ty/scale` and apply them via the existing
+rAF-batched `scheduleApplyViewport` — nothing in that path knew an
+overlay existed, so the transform changed underneath it with no re-sync.
+**Decision (D8, resolved by the user before implementation — perf-adjacent
+per CLAUDE.md rule 3):** live-reposition every applied frame, not
+commit-and-close on pan/zoom start. Rationale: the overlap of "editor
+open" AND "actively panning/zooming" is narrow and user-driven; the
+per-frame cost is the same `getNodeScreenRect` call `openInlineEditor`
+already pays once today, gated behind a cheap guard that no-ops
+immediately whenever no editor is open (the common case, including every
+frame of ordinary pan/zoom with nothing being edited) — so this adds zero
+cost outside an active edit session and never touches the edge/node
+dirty-tracking or culling hot paths.
+**Fix:** `SvgRenderer.setViewportChangeHandler(fn: () => void)` — a new
+subscriber slot fired once per applied frame from inside
+`scheduleApplyViewport`'s rAF callback, right after the transform is
+written to the DOM and `recull()` runs (not per raw wheel/pointermove
+event, staying on the existing batched cadence). `MindMapView` subscribes
+once per renderer instance (`buildFromScratch`) and tracks which node is
+currently being edited (`editingNodeId`, kept in lockstep with
+`inlineEditor` — set together in `openInlineEditor`, cleared together in
+`onCommit`/`onCancel`/`onCommitAndCreateChild`/`clear()`). Its callback
+(`repositionInlineEditorForViewport`) returns immediately when no editor
+is open; otherwise it recomputes `getNodeScreenRect`/`getNodeEditMetrics`
+for `editingNodeId` and pushes the result into a new
+`InlineEditor.reposition(rect, fontSize)` method, which updates the
+overlay's `left`/`top` always, and re-measures width against the new font
+(without discarding a height the user already grew past the original
+`rect.height` by typing multi-line content).
+**Culling edge case:** the node being edited was visible when the editor
+opened, but an extreme pan can still cull it back out of the DOM before
+`recull()` runs again (`getNodeScreenRect` returns `null` once a node's
+entry is pruned from `lastLayout`) — handled by skipping the reposition
+for that one frame rather than crashing or hiding the editor; the next
+applied frame (e.g. panning back) picks it up again once the node
+re-enters the culled set.
+**Regression tests:** `test/inlineEditor.test.ts` — `reposition()` updates
+`left`/`top`, updates `fontSize` and re-clamps width against it, and is a
+safe no-op after commit/destroy. `test/renderer.smoke.test.ts` — an
+integration test wiring `SvgRenderer.setViewportChangeHandler` +
+`InlineEditor.reposition` the same way `MindMapView` does (mirroring its
+logic directly, since `MindMapView` itself needs the real Obsidian API
+and isn't unit-instantiable) confirms a mocked moved rect reaches the
+overlay's style only after the next rAF, and that no inline editor open
+means the hook never calls `getNodeScreenRect` at all. 348 tests pass
+(343 baseline + 5 new); `npm run build` typechecks clean.
+
 ## 2026-07-18 — Feature (M-R1a/M-R2): same-document relation arrows + cross-document badges
 
 **Scope:** `plans/PLAN-relations-and-ux-fixes.md`'s R1 ("same-document

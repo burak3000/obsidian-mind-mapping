@@ -44,6 +44,7 @@ Open any markdown note as a mind map via the command palette (**Open as mind map
 | `Ctrl/Cmd+Z` / `Ctrl/Cmd+Shift+Z` | Undo / redo |
 | `Ctrl/Cmd+/` or `Ctrl/Cmd+Shift+C` | Fold / unfold the selected branch |
 | `Ctrl/Cmd+Shift+L` | Add / edit a link (or a same-document relation) on the selected node |
+| `Ctrl/Cmd+Shift+G` | Go to the selected node's section in the note |
 | `Ctrl/Cmd+=` / `Ctrl/Cmd+-` / mouse wheel | Zoom |
 | `Ctrl/Cmd+Home` | Center on the root |
 | Drag a node | Reorder it under the node you drop it on |

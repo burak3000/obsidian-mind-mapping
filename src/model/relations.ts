@@ -1,4 +1,4 @@
-import { LinkKind, parseTextSegments } from "./links";
+import { LinkKind, isUrlTarget, parseTextSegments } from "./links";
 import { MindMapModel, MindNode, ResolvedRelation } from "./types";
 
 interface RawLink {
@@ -99,6 +99,56 @@ function classifyLink(link: RawLink, model: MindMapModel, node: MindNode, fileBa
  * has no fold/pos/width of its own (R1a item 2: forces the id to survive
  * round-trip).
  */
+/** Badge shown next to each row in the R3/R5 relation/link modal's item list. `"unresolved"` covers the narrow classifyLink-returns-null case (dangling same-file block ref, bare heading link, self-link) — still a real link occurrence the user may want to remove, just not one that renders as an arrow or a cross-doc badge on the canvas. `"external"` is a `cross-doc` relation whose target looks like a URL, split out purely for a friendlier badge label than lumping it in with cross-doc note links. */
+export type LinkItemBadge = "same-doc" | "cross-doc" | "external" | "unresolved";
+
+export interface LinkItem {
+	/** Position among all link occurrences in the node's raw text, 0-based, left to right — the exact identifier `removeLinkOccurrence` (model/links.ts) expects to remove this same item. */
+	occurrenceIndex: number;
+	label: string;
+	linkKind: LinkKind;
+	rawTarget: string;
+	relation: ResolvedRelation | null;
+	badge: LinkItemBadge;
+}
+
+function badgeFor(linkKind: LinkKind, rawTarget: string, relation: ResolvedRelation | null): LinkItemBadge {
+	if (!relation) return "unresolved";
+	if (relation.kind === "same-doc") return "same-doc";
+	return linkKind === "mdlink" && isUrlTarget(rawTarget) ? "external" : "cross-doc";
+}
+
+/**
+ * Every link occurrence in a node's text (R3/R5 relation/link modal's item
+ * list), in `parseTextSegments`'s left-to-right order. Reclassifies each
+ * occurrence fresh via `classifyLink` rather than reusing
+ * `node.resolvedRelations`: that cache silently drops the "ignored" case
+ * (same-file but not a resolvable block ref), but the modal still needs to
+ * list — and let the user remove — every link actually in the text,
+ * resolved or not. Modal-local work over a single node's handful of links,
+ * never on the layout/render hot path (see this file's `resolveRelations`
+ * doc comment for why the tree-wide walk itself is already cheap) —
+ * opening this modal re-does a few `classifyLink` calls `resolveRelations`
+ * already did once for the whole tree, which is negligible at modal-open
+ * frequency.
+ */
+export function listNodeLinkItems(node: MindNode, model: MindMapModel, fileBasename: string | null): LinkItem[] {
+	return parseTextSegments(node.text)
+		.filter((s) => s.link !== null)
+		.map((s, i) => {
+			const link = s.link!;
+			const relation = classifyLink(link, model, node, fileBasename);
+			return {
+				occurrenceIndex: i,
+				label: s.text,
+				linkKind: link.kind,
+				rawTarget: link.target,
+				relation,
+				badge: badgeFor(link.kind, link.target, relation),
+			};
+		});
+}
+
 export function resolveRelations(model: MindMapModel, fileBasename: string | null): { sourceId: string; targetId: string }[] {
 	// Two passes, not one combined pass: a source can appear *before* its
 	// target in this pre-order walk (targets aren't ordered relative to

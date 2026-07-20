@@ -4,6 +4,8 @@ export interface NodeMeta {
 	folded?: boolean;
 	pos?: [number, number];
 	width?: number;
+	/** Durable twin of `MindNode.externalRelationTarget` — see that field's doc comment (model/types.ts) for why a cross-doc relation target needs frontmatter persistence instead of a recomputed-on-parse flag like `isRelationTarget`. */
+	externalRef?: boolean;
 }
 
 export interface MindmapFrontmatterData {
@@ -11,22 +13,41 @@ export interface MindmapFrontmatterData {
 }
 
 function hasMeta(meta: NodeMeta): boolean {
-	return meta.folded === true || meta.pos !== undefined || meta.width !== undefined;
+	return meta.folded === true || meta.pos !== undefined || meta.width !== undefined || meta.externalRef === true;
 }
 
 /**
  * True if a node currently has metadata worth persisting: R13 fold state,
- * R12 manual position, drag-resized width, or — R1a item 2 — being the
- * target of a same-doc relation (`isRelationTarget`, set by
- * `model/relations.ts`'s `resolveRelations`). That last case has no
- * fold/pos/width of its own, so `collectMeta`'s frontmatter entry for it
- * ends up empty and gets filtered out by `hasMeta` — only the plain
- * ` ^blockid` line suffix (written by `serializeNode` off this same
- * predicate) survives, which is exactly what a relation reference needs to
- * keep resolving across a round-trip.
+ * R12 manual position, drag-resized width, or one of two relation-target
+ * cases that otherwise have no fold/pos/width of their own (so
+ * `collectMeta`'s frontmatter entry for them would be empty and get
+ * filtered out by `hasMeta` — only the plain ` ^blockid` line suffix,
+ * written by `serializeNode` off this same predicate, is what actually
+ * needs to survive):
+ * - `isRelationTarget` (R1a item 2) — a *same-doc* relation's target,
+ *   re-derived from scratch on every parse by `model/relations.ts`'s
+ *   `resolveRelations` scanning this file's own link text. Self-justifying
+ *   every time, so no frontmatter storage is needed for it.
+ * - `externalRelationTarget` (R4 durability fix) — a *cross-doc* relation's
+ *   target, authored by another file. Nothing in *this* file's own content
+ *   re-derives that fact on parse, so unlike `isRelationTarget` it can't
+ *   just be recomputed — it's loaded from/written to this file's own
+ *   `mindmap:` frontmatter (`NodeMeta.externalRef`) instead, the same
+ *   durability mechanism `folded`/`pos`/`width` already use. This is a
+ *   separate field rather than a reuse of `isRelationTarget` specifically
+ *   because `resolveRelations` unconditionally resets `isRelationTarget` to
+ *   `false` at the start of every walk before re-deriving it — reusing that
+ *   field would have a frontmatter-loaded `true` stomped the moment
+ *   `resolveRelations` next runs, before anything else could act on it.
  */
 export function nodeHasPersistableMeta(node: MindNode): boolean {
-	return node.folded === true || node.manualPos !== undefined || node.manualWidth !== undefined || node.isRelationTarget === true;
+	return (
+		node.folded === true ||
+		node.manualPos !== undefined ||
+		node.manualWidth !== undefined ||
+		node.isRelationTarget === true ||
+		node.externalRelationTarget === true
+	);
 }
 
 const SYNTHETIC_ID_RE = /^n\d+$/;
@@ -96,6 +117,7 @@ const NODES_LINE_RE = /^ {2}nodes:\s*$/;
 const NODE_ENTRY_RE = /^ {4}\^([A-Za-z0-9_-]+):\s*\{([^}]*)\}\s*$/;
 const POS_RE = /\bpos:\s*\[\s*(-?\d+(?:\.\d+)?)\s*,\s*(-?\d+(?:\.\d+)?)\s*\]/;
 const WIDTH_RE = /\bwidth:\s*(-?\d+(?:\.\d+)?)/;
+const EXTERNAL_REF_RE = /\bexternalRef:\s*true\b/;
 
 /**
  * Reads our `mindmap:` subtree out of a raw frontmatter block (verbatim
@@ -135,6 +157,7 @@ export function extractMindmapData(frontmatterRaw: string | null): MindmapFrontm
 				if (posMatch) meta.pos = [parseFloat(posMatch[1]), parseFloat(posMatch[2])];
 				const widthMatch = WIDTH_RE.exec(body);
 				if (widthMatch) meta.width = parseFloat(widthMatch[1]);
+				if (EXTERNAL_REF_RE.test(body)) meta.externalRef = true;
 				if (hasMeta(meta)) nodes[id] = meta;
 			}
 		}
@@ -150,6 +173,7 @@ export function applyMindmapDataToTree(byId: Map<string, MindNode>, data: Mindma
 		if (meta.folded) node.folded = true;
 		if (meta.pos) node.manualPos = { x: meta.pos[0], y: meta.pos[1] };
 		if (meta.width !== undefined) node.manualWidth = meta.width;
+		if (meta.externalRef) node.externalRelationTarget = true;
 	}
 }
 
@@ -170,6 +194,7 @@ export function applyMindmapData(existingFrontmatterRaw: string | null, data: Mi
 			if (meta.folded) parts.push("folded: true");
 			if (meta.pos) parts.push(`pos: [${meta.pos[0]}, ${meta.pos[1]}]`);
 			if (meta.width !== undefined) parts.push(`width: ${meta.width}`);
+			if (meta.externalRef) parts.push("externalRef: true");
 			ourBlockLines.push(`    ^${id}: { ${parts.join(", ")} }`);
 		}
 	}
