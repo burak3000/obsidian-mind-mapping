@@ -109,6 +109,18 @@ describe("computeNodeBox with image embeds (plan item 07, decision A: fixed-size
 		const b = computeNodeBox("![[photo.png]]", DEFAULT_LAYOUT_CONFIG, 1);
 		expect(a.imageBox).toEqual(b.imageBox);
 	});
+
+	it("never overlaps an image-embed node's (much taller) box with its plain-text neighbors' boxes", () => {
+		const md = ["# Root", "## caption A", "## caption ![[photo.png]]", "## caption B"].join("\n");
+		const model = parseMindMap(md, "fallback");
+		computeLayout(model.root, { ...DEFAULT_LAYOUT_CONFIG, mode: "right-only" });
+		const siblings = model.root.children;
+		for (let i = 1; i < siblings.length; i++) {
+			const prev = siblings[i - 1].layout!;
+			const cur = siblings[i].layout!;
+			expect(cur.y).toBeGreaterThanOrEqual(prev.y + prev.h);
+		}
+	});
 });
 
 describe("computeLayout with wrapped nodes", () => {
@@ -120,6 +132,19 @@ describe("computeLayout with wrapped nodes", () => {
 		const [wrapped, short] = model.root.children; // both depth 1
 		expect(wrapped.layout!.h).toBeGreaterThan(short.layout!.h);
 		expect(short.layout!.h).toBeCloseTo(DEFAULT_LAYOUT_CONFIG.nodeHeight * scaleForDepth(1, DEFAULT_LAYOUT_CONFIG));
+	});
+
+	it("never overlaps a tall wrapped sibling's box with its shorter neighbors' boxes (regression: flextree's footprint center was mistaken for the box's top edge)", () => {
+		const longText = Array.from({ length: 20 }, (_, i) => `word${i}`).join(" ");
+		const md = ["# Root", "## short A", `## ${longText}`, "## short B"].join("\n");
+		const model = parseMindMap(md, "fallback");
+		computeLayout(model.root, { ...DEFAULT_LAYOUT_CONFIG, mode: "right-only" });
+		const siblings = model.root.children; // document order == breadth order here
+		for (let i = 1; i < siblings.length; i++) {
+			const prev = siblings[i - 1].layout!;
+			const cur = siblings[i].layout!;
+			expect(cur.y).toBeGreaterThanOrEqual(prev.y + prev.h);
+		}
 	});
 
 	it("respects a node's manualWidth as its wrap ceiling instead of the depth-scaled default", () => {

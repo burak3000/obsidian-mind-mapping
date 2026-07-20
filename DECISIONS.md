@@ -1,5 +1,31 @@
 # Architectural Decision Records
 
+## 2026-07-20 — Bugfix: tall nodes (wrapped text / image embeds) overlapping their neighbors
+
+**Root cause:** `layoutEngine.ts`'s `layoutSide` fed each node's real box
+height into `d3-flextree`'s `nodeSize` (so per-node footprint was already
+correct), but then wrote `node.layout.y = n.x + anchorY` directly —
+treating flextree's `n.x` as the box's *top* edge. Per d3-flextree's own
+`left`/`right` accessors (`x ± xSize/2`), `n.x` is the footprint's
+*center*, not its top. Every other consumer of `layout.y` in the codebase
+(SvgRenderer, navigation.ts, MindMapView) treats it as the top edge and
+derives center as `y + h/2`. The center-as-top substitution is a constant
+offset that cancels out when all siblings share one height — which is why
+this went unnoticed until a node grew taller than its neighbors (multi-line
+wrapped text, or an image-embed thumbnail) and started overlapping them.
+**Fix:** `node.layout.y = n.x - box.h / 2 + anchorY` — convert flextree's
+footprint center to the box's top edge before storing it.
+**Side effect surfaced by the fix:** a lone auto-managed child (no
+siblings) used to land with its *top* exactly on the anchor's breadth-axis
+line; now its *center* lands there instead — the more correct reading of
+"balanced around the anchor," and consistent with how multiple siblings
+are already centered as a group. Updated the one test
+(`manualPosition.test.ts`) that asserted the old top-alignment.
+**Cost:** none — same O(1) per-node arithmetic, no new allocations.
+**Regression tests:** `test/layout.test.ts` — two new cases assert
+`[y, y+h]` ranges don't intersect between a wrapped multi-line sibling (or
+an image-embed sibling) and its plain single-line neighbors.
+
 ## 2026-07-20 — Feature: "Completed" badge renamed to "Done" + Cmd+Shift+D direct-toggle shortcut
 
 **Follow-up to the status-badges entry below.** User asked for a direct
