@@ -37,6 +37,12 @@ surface that 06 and 07 later hook into; 05 before 06 because both touch the
 clipboard (05 turns it into `MindNode[]`, 06 then serializes that array);
 07 last — largest and the only one with real performance risk.
 
+### Phase 3 — Later additions (post Phase 1/2)
+
+| Order | Subplan | Item | Effort | Status | Blocked on |
+|---|---|---|---|---|---|
+| 9 | [09 — Node status badges](09-feature-status-badges.md) | Completed/Started/Blocked/Red Flag/Green Flag/Ready-to-work-on badges | M | done | — |
+
 ## Dependency notes
 
 - **05 → 06**: `Controller.clipboard` becomes `MindNode[]` in 05; 06's

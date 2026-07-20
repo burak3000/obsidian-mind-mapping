@@ -228,6 +228,77 @@
 	fill: var(--text-on-accent);
 }
 
+/* plans/09: node status badge — small glyph+color indicator at the corner
+   opposite the cross-doc badge (see upsertStatusBadge). Color is a CSS class
+   per key rather than an inline style, matching the .mm-color-cN pattern
+   (colors.ts) so it stays theme-aware/overridable via a user CSS snippet. */
+.mm-status-badge {
+	cursor: pointer;
+}
+
+.mm-status-badge circle {
+	stroke: var(--background-primary);
+	stroke-width: 1;
+}
+
+.mm-status-badge text {
+	fill: var(--text-on-accent);
+	font-size: 9px;
+	pointer-events: none;
+	user-select: none;
+}
+
+.mm-status-badge-done circle {
+	fill: var(--color-green);
+}
+
+.mm-status-badge-started circle {
+	fill: var(--color-blue);
+}
+
+.mm-status-badge-blocked circle {
+	fill: var(--color-red);
+}
+
+.mm-status-badge-red-flag circle {
+	fill: var(--color-red);
+}
+
+.mm-status-badge-green-flag circle {
+	fill: var(--color-green);
+}
+
+.mm-status-badge-ready circle {
+	fill: var(--color-cyan);
+}
+
+/* Context-menu keyboard-shortcut hints (MindMapView.ts's menuItemTitle) —
+   Obsidian's Menu API only auto-shows a hotkey for command-backed items, so
+   plain onClick items need it rendered into their own title. `min-width`
+   (not `justify-content` alone) is what pushes the hint to the right — see
+   menuItemTitle's doc comment for why: Obsidian's `.menu-item-title` doesn't
+   stretch to the full menu width, so a flex child's `width: 100%` has no
+   extra space to distribute without a floor of its own. */
+.mm-menu-item-row {
+	display: flex;
+	align-items: center;
+	width: 100%;
+	min-width: 16em;
+}
+
+.mm-menu-item-label {
+	flex: 1 1 auto;
+	text-align: left;
+}
+
+.mm-menu-item-hotkey {
+	flex: 0 0 auto;
+	margin-left: 12px;
+	color: var(--text-faint);
+	font-size: 0.85em;
+	white-space: nowrap;
+}
+
 /* Image thumbnail (R-image-display, decision A: fixed-size thumb, click
    opens the image). Placeholder shows until the image loads; the missing
    glyph only shows on a load error (both toggled by the group's own

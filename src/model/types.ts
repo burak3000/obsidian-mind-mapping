@@ -31,6 +31,8 @@ export interface MindNode {
 	depth: number;
 	folded: boolean;
 	colorKey?: string;
+	/** One of `BadgeKey` (model/statusBadges.ts) marking the node's workflow status — Done/Started/Blocked/Red Flag/Green Flag/Ready to work on. Typed as `string` rather than `BadgeKey` so a value loaded from frontmatter that a newer plugin version wrote (and this version doesn't recognize) still round-trips instead of being rejected — see `sync/metadata.ts`. */
+	statusBadge?: string;
 	/** Sticky left/right assignment for a first-level branch (R11) — set once, never auto-reassigned; see DECISIONS.md "sticky sides". */
 	branchSide?: "L" | "R";
 	manualPos?: { x: number; y: number };

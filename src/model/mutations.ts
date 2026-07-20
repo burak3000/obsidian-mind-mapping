@@ -98,6 +98,13 @@ export function setFolded(model: MindMapModel, nodeId: string, folded: boolean):
 	model.version += 1;
 }
 
+export function setStatusBadge(model: MindMapModel, nodeId: string, badge: string | undefined): void {
+	const node = model.byId.get(nodeId);
+	if (!node) throw new Error(`setStatusBadge: unknown node id ${nodeId}`);
+	node.statusBadge = badge;
+	model.version += 1;
+}
+
 /** Pins a node to an absolute position, excluding it from auto-balance layout (R12). */
 export function setManualPosition(model: MindMapModel, nodeId: string, pos: { x: number; y: number }): void {
 	const node = model.byId.get(nodeId);
@@ -196,6 +203,7 @@ export function cloneSubtree(node: MindNode): MindNode {
 		depth: node.depth,
 		folded: node.folded,
 		manualWidth: node.manualWidth,
+		statusBadge: node.statusBadge,
 		subtreeCount: 0,
 		attachedContent: node.attachedContent ? [...node.attachedContent] : undefined,
 	};

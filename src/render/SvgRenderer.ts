@@ -1,6 +1,7 @@
 import { DropPosition, MindMapModel, MindNode, NodeLayout } from "../model/types";
 import { collectVisibleNodes } from "../model/visibility";
 import { resolveNodeColorKey, strokeWidthForDepth } from "./colors";
+import { getBadgeDef } from "../model/statusBadges";
 import { LinkKind, getImageEmbed, parseTextSegments } from "../model/links";
 import { wrapText, WordToken } from "../model/textWrap";
 import { DEFAULT_LAYOUT_CONFIG, LayoutConfig, NodeBoxConfig, computeNodeBox, defaultWrapWidthForDepth, fontSizeForDepth, scaleForDepth } from "../layout/layoutEngine";
@@ -42,6 +43,15 @@ interface ImageDom {
 	missing: SVGTextElement;
 }
 
+/** Status badge (plans/09) — a small glyph+color indicator for the node's workflow status (Done/Started/Blocked/Red Flag/Green Flag/Ready to work on, model/statusBadges.ts). Created lazily, only for nodes with a `statusBadge` whose key `getBadgeDef` recognizes. */
+interface StatusBadgeDom {
+	g: SVGGElement;
+	circle: SVGCircleElement;
+	text: SVGTextElement;
+	title: SVGTitleElement;
+	badgeKey: string | null;
+}
+
 interface NodeDom {
 	g: SVGGElement;
 	rect: SVGRectElement;
@@ -51,6 +61,7 @@ interface NodeDom {
 	badge: BadgeDom | null;
 	image: ImageDom | null;
 	crossDocBadge: CrossDocBadgeDom | null;
+	statusBadge: StatusBadgeDom | null;
 }
 
 interface LayoutSnapshot {
@@ -296,6 +307,8 @@ export class SvgRenderer {
 	private onBadgeClick: ((nodeId: string) => void) | null = null;
 	/** R2: fired when a node's cross-document relation badge is clicked. */
 	private onCrossDocBadgeClick: ((nodeId: string) => void) | null = null;
+	/** plans/09: fired when a node's status badge is clicked — opens the same quick-pick menu as Cmd+Shift+I. */
+	private onStatusBadgeClick: ((nodeId: string) => void) | null = null;
 	/** Fired on a plain click that lands on empty canvas (not a node/badge/link) — lets the caller clear the current selection, giving visible confirmation that the canvas itself received the click (see: users couldn't tell whether clicking the background did anything). */
 	private onBackgroundClick: (() => void) | null = null;
 	private onLinkClick: ((kind: LinkKind, target: string) => void) | null = null;
@@ -414,6 +427,11 @@ export class SvgRenderer {
 	/** R2: cross-document relation badge click — the view layer resolves the node's cross-doc relation(s) and opens the target via the existing `openLink` path. */
 	setCrossDocBadgeClickHandler(fn: (nodeId: string) => void): void {
 		this.onCrossDocBadgeClick = fn;
+	}
+
+	/** plans/09: status badge click — the view layer opens the same quick-pick status menu as Cmd+Shift+I, positioned via `getNodeScreenRect`. */
+	setStatusBadgeClickHandler(fn: (nodeId: string) => void): void {
+		this.onStatusBadgeClick = fn;
 	}
 
 	/** F3: subscribe to viewport (pan/zoom) changes, fired once per applied frame — see `onViewportChange`'s field doc for why this is batched and not per-event. */
@@ -656,7 +674,7 @@ export class SvgRenderer {
 			g.appendChild(resizeHandle);
 
 			this.nodesG.appendChild(g);
-			dom = { g, rect, text, resizeHandle, colorClass: null, badge: null, image: null, crossDocBadge: null };
+			dom = { g, rect, text, resizeHandle, colorClass: null, badge: null, image: null, crossDocBadge: null, statusBadge: null };
 			this.nodeEls.set(node.id, dom);
 			if (this.selectedIds.has(node.id)) g.classList.add("mm-selected");
 			if (node.id === this.primaryId) g.classList.add("mm-selected-primary");
@@ -706,6 +724,7 @@ export class SvgRenderer {
 
 		this.upsertBadge(node, dom, layout);
 		this.upsertCrossDocBadge(node, dom, layout);
+		this.upsertStatusBadge(node, dom, layout);
 	}
 
 	/** The wrap ceiling in px for a node — a manually drag-resized width overrides the depth-scaled default; must match `computeNodeBox`'s exactly, or wrapped line count here could disagree with the box height layoutEngine already committed to. */
@@ -896,6 +915,58 @@ export class SvgRenderer {
 		dom.crossDocBadge.g.setAttribute("transform", `translate(${badgeX}, -8)`);
 		const targets = relations!.filter((r) => r.kind === "cross-doc").map((r) => r.rawTarget);
 		dom.crossDocBadge.title.textContent = `Links to: ${targets.join(", ")}`;
+	}
+
+	/**
+	 * Status badge (plans/09): a small glyph+color indicator for the node's
+	 * workflow status, shown only when `node.statusBadge` is set to a key
+	 * `getBadgeDef` recognizes (an unrecognized value — e.g. written by a
+	 * newer plugin version — round-trips through save/load but renders
+	 * nothing here, matching `nodeHasPersistableMeta`'s "capture, don't
+	 * validate" policy in sync/metadata.ts). Same cheap "always call, no-op
+	 * fast" cost profile as `upsertBadge`/`upsertCrossDocBadge` above — a map
+	 * lookup and a couple of attribute writes, no allocation in the common
+	 * (no badge) case. Placed at the corner opposite the cross-doc badge
+	 * (which sits at `x = side==="L" ? 0 : w`) so the two never overlap even
+	 * on a node that has both.
+	 */
+	private upsertStatusBadge(node: MindNode, dom: NodeDom, layout: LayoutSnapshot): void {
+		const def = getBadgeDef(node.statusBadge);
+		if (!def) {
+			if (dom.statusBadge) {
+				dom.statusBadge.g.remove();
+				dom.statusBadge = null;
+			}
+			return;
+		}
+
+		if (!dom.statusBadge) {
+			const g = el("g");
+			g.classList.add("mm-status-badge");
+			const circle = el("circle");
+			circle.setAttribute("r", "8");
+			g.appendChild(circle);
+			const text = el("text");
+			text.setAttribute("text-anchor", "middle");
+			text.setAttribute("dominant-baseline", "central");
+			g.appendChild(text);
+			const title = el("title");
+			g.appendChild(title);
+			dom.g.appendChild(g);
+			dom.statusBadge = { g, circle, text, title, badgeKey: null };
+		}
+
+		const side = node.layout!.side;
+		const badgeX = side === "L" ? layout.w : 0;
+		dom.statusBadge.g.setAttribute("transform", `translate(${badgeX}, -8)`);
+
+		if (dom.statusBadge.badgeKey !== def.key) {
+			if (dom.statusBadge.badgeKey) dom.statusBadge.g.classList.remove(`mm-status-badge-${dom.statusBadge.badgeKey}`);
+			dom.statusBadge.g.classList.add(`mm-status-badge-${def.key}`);
+			dom.statusBadge.badgeKey = def.key;
+			dom.statusBadge.text.textContent = def.glyph;
+			dom.statusBadge.title.textContent = def.label;
+		}
 	}
 
 	/**
@@ -1497,6 +1568,12 @@ export class SvgRenderer {
 		if (crossDocBadge) {
 			const nodeG = crossDocBadge.closest(".mm-node") as SVGGElement | null;
 			if (nodeG?.dataset.nodeId) this.onCrossDocBadgeClick?.(nodeG.dataset.nodeId);
+			return;
+		}
+		const statusBadge = target.closest(".mm-status-badge");
+		if (statusBadge) {
+			const nodeG = statusBadge.closest(".mm-node") as SVGGElement | null;
+			if (nodeG?.dataset.nodeId) this.onStatusBadgeClick?.(nodeG.dataset.nodeId);
 			return;
 		}
 		const link = target.closest(".mm-node-link") as SVGElement | null;

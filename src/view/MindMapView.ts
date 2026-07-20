@@ -1,4 +1,4 @@
-import { Menu, Notice, TAbstractFile, TFile, TextFileView, WorkspaceLeaf } from "obsidian";
+import { Menu, Notice, Platform, TAbstractFile, TFile, TextFileView, WorkspaceLeaf } from "obsidian";
 import { parseMindMap } from "../sync/parser";
 import { serializeMindMap, serializeSubtree, SerializeConfig } from "../sync/serializer";
 import { computeLayout, DEFAULT_LAYOUT_CONFIG } from "../layout/layoutEngine";
@@ -25,6 +25,7 @@ import {
 	removeLinkOccurrence,
 } from "../model/links";
 import { MindMapModel, MindNode } from "../model/types";
+import { BADGE_DEFS } from "../model/statusBadges";
 import { listNodeLinkItems, resolveRelations } from "../model/relations";
 import { LinkModal, RelationTarget, RelationTargetOption, DocumentOption } from "./LinkModal";
 import { CURRENT_DOCUMENT_ID, commitForeignRelationTarget, resolveRelationTargetsForDocument } from "../sync/foreignRelation";
@@ -36,6 +37,48 @@ import { resolveGoToTarget } from "../sync/goToSection";
 import { parseExternalPaste } from "../sync/parseExternalPaste";
 
 export const VIEW_TYPE_MINDMAP = "mindmap-view";
+
+/**
+ * Builds a context-menu item title with the label left-aligned and a muted,
+ * parenthesized keyboard-shortcut hint pushed to the right. Obsidian's
+ * `Menu`/`MenuItem` only auto-shows a hotkey hint for items backed by a
+ * registered `Command` — these menu items are plain `onClick` closures (see
+ * `showNodeMenu`), so nothing surfaces the matching `onKeyDown` binding
+ * otherwise, even though most of these actions do have one. `setTitle`
+ * accepts a `DocumentFragment` as well as a plain string (Obsidian API), so
+ * the hint is rendered directly into the title rather than needing any
+ * private/internal menu API.
+ *
+ * The row's own `min-width` (styles.css `.mm-menu-item-row`) is what
+ * actually pushes the hint right, not `justify-content` alone: Obsidian's
+ * `.menu-item-title` wraps its content at that content's own natural
+ * (shrink-to-fit) width rather than stretching to the full menu width, so a
+ * flex child asking for 100% of an undefined/shrink-wrapped parent width
+ * gets no extra space to distribute. A `min-width` sets a floor on our own
+ * row regardless of what the ancestor does, and since every menu already
+ * sizes itself to its widest item ("Copy subtree as markdown" here), every
+ * row ends up rendered at a consistent width — the hints line up as a
+ * column instead of sitting flush against varying-length labels.
+ *
+ * `mac`/`other` are given as pre-formatted strings (rather than a generic
+ * modifier-list formatter) since this is a small, fixed set of shortcuts.
+ */
+function menuItemTitle(label: string, hotkey?: { mac: string; other: string }): string | DocumentFragment {
+	if (!hotkey) return label;
+	const frag = document.createDocumentFragment();
+	const row = document.createElement("span");
+	row.classList.add("mm-menu-item-row");
+	const labelEl = document.createElement("span");
+	labelEl.classList.add("mm-menu-item-label");
+	labelEl.textContent = label;
+	const hintEl = document.createElement("span");
+	hintEl.classList.add("mm-menu-item-hotkey");
+	hintEl.textContent = `(${Platform.isMacOS ? hotkey.mac : hotkey.other})`;
+	row.appendChild(labelEl);
+	row.appendChild(hintEl);
+	frag.appendChild(row);
+	return frag;
+}
 
 /** Decoupled from `main.ts`'s concrete Plugin class to avoid a circular import — anything with a live `settings` object works. */
 export interface SettingsProvider {
@@ -169,6 +212,7 @@ export class MindMapView extends TextFileView implements ControllerListener {
 		this.renderer.setNodeDblClickHandler((id) => this.controller?.requestEdit(id));
 		this.renderer.setBadgeClickHandler((id) => this.controller?.toggleFold(id));
 		this.renderer.setCrossDocBadgeClickHandler((id) => this.openCrossDocRelation(id));
+		this.renderer.setStatusBadgeClickHandler((id) => this.showStatusBadgeMenuForNode(id));
 		this.renderer.setBackgroundClickHandler(() => this.controller?.select(null));
 		this.renderer.setNodeContextMenuHandler((id, evt) => this.showNodeMenu(id, evt));
 		this.renderer.setLinkClickHandler((kind, target) => this.openLink(kind, target));
@@ -600,36 +644,49 @@ export class MindMapView extends TextFileView implements ControllerListener {
 		menu
 			.addItem((item) =>
 				item
-					.setTitle("Go to note section")
+					.setTitle(menuItemTitle("Go to note section", { mac: "⌘⇧G", other: "Ctrl+Shift+G" }))
 					.setIcon("arrow-right-to-line")
 					.setDisabled(target.kind === "unavailable")
 					.onClick(() => this.goToNoteSection(nodeId))
 			)
 			.addSeparator()
-			.addItem((item) => item.setTitle("Edit").setIcon("pencil").onClick(() => this.controller?.requestEdit(nodeId)))
 			.addItem((item) =>
 				item
-					.setTitle("Add child")
+					.setTitle(menuItemTitle("Edit", { mac: "F2", other: "F2" }))
+					.setIcon("pencil")
+					.onClick(() => this.controller?.requestEdit(nodeId))
+			)
+			.addItem((item) =>
+				item
+					.setTitle(menuItemTitle("Add child", { mac: "Tab", other: "Tab" }))
 					.setIcon("plus")
 					.onClick(() => this.controller?.addChildToSelected())
 			)
 			.addItem((item) =>
 				item
-					.setTitle("Add sibling")
+					.setTitle(menuItemTitle("Add sibling", { mac: "Enter", other: "Enter" }))
 					.setIcon("list-plus")
 					.onClick(() => this.controller?.addSiblingToSelected("after"))
 			)
-			.addItem((item) => item.setTitle("Edit link").setIcon("link").onClick(() => this.openLinkEditor(nodeId)))
 			.addItem((item) =>
 				item
-					.setTitle(node.folded ? "Unfold" : "Fold")
+					.setTitle(menuItemTitle("Edit link", { mac: "⌘⇧L", other: "Ctrl+Shift+L" }))
+					.setIcon("link")
+					.onClick(() => this.openLinkEditor(nodeId))
+			)
+			.addItem((item) =>
+				item
+					.setTitle(menuItemTitle(node.folded ? "Unfold" : "Fold", { mac: "⌘/", other: "Ctrl+/" }))
 					.setIcon(node.folded ? "chevron-right" : "chevron-down")
 					.onClick(() => this.controller?.toggleFold(nodeId))
 			)
+			.addSeparator();
+		this.addStatusBadgeMenuItems(menu, node);
+		menu
 			.addSeparator()
 			.addItem((item) =>
 				item
-					.setTitle("Copy")
+					.setTitle(menuItemTitle("Copy", { mac: "⌘C", other: "Ctrl+C" }))
 					.setIcon("copy")
 					.onClick(() => {
 						this.controller?.copySelected();
@@ -638,7 +695,7 @@ export class MindMapView extends TextFileView implements ControllerListener {
 			)
 			.addItem((item) =>
 				item
-					.setTitle("Cut")
+					.setTitle(menuItemTitle("Cut", { mac: "⌘X", other: "Ctrl+X" }))
 					.setIcon("scissors")
 					.onClick(() => {
 						this.controller?.cutSelected();
@@ -647,7 +704,7 @@ export class MindMapView extends TextFileView implements ControllerListener {
 			)
 			.addItem((item) =>
 				item
-					.setTitle("Paste")
+					.setTitle(menuItemTitle("Paste", { mac: "⌘V", other: "Ctrl+V" }))
 					.setIcon("clipboard-paste")
 					.onClick(() => this.handlePaste())
 			)
@@ -663,9 +720,42 @@ export class MindMapView extends TextFileView implements ControllerListener {
 					})
 			)
 			.addSeparator()
-			.addItem((item) => item.setTitle("Delete").setIcon("trash").onClick(() => this.controller?.deleteSelected()));
+			.addItem((item) =>
+				item
+					.setTitle(menuItemTitle("Delete", { mac: "⌫", other: "Delete" }))
+					.setIcon("trash")
+					.onClick(() => this.controller?.deleteSelected())
+			);
 
 		menu.showAtMouseEvent(evt);
+	}
+
+	/** Shared by `showNodeMenu`, the Cmd+Shift+I quick-pick menu, and a status-badge click — the 6 canonical statuses (model/statusBadges.ts) plus "Clear status" when one is set, each checked to show the node's current status. A badge with its own direct-toggle shortcut (currently just "done", Cmd+Shift+D) shows that hint next to its label, same as `showNodeMenu`'s other items. */
+	private addStatusBadgeMenuItems(menu: Menu, node: MindNode): void {
+		for (const { key, label, hotkey } of BADGE_DEFS) {
+			menu.addItem((item) =>
+				item
+					.setTitle(menuItemTitle(label, hotkey))
+					.setChecked(node.statusBadge === key)
+					.onClick(() => this.controller?.setStatusBadge(node.id, key))
+			);
+		}
+		if (node.statusBadge !== undefined) {
+			menu.addItem((item) => item.setTitle("Clear status").onClick(() => this.controller?.setStatusBadge(node.id, undefined)));
+		}
+	}
+
+	/** Cmd+Shift+I and a status-badge click: opens the same status quick-pick as the context menu's section, positioned at the node's current screen location. */
+	private showStatusBadgeMenuForNode(nodeId: string): void {
+		if (!this.controller || !this.renderer) return;
+		const node = this.controller.model.byId.get(nodeId);
+		if (!node) return;
+		const rect = this.renderer.getNodeScreenRect(nodeId);
+		if (!rect) return;
+
+		const menu = new Menu();
+		this.addStatusBadgeMenuItems(menu, node);
+		menu.showAtPosition({ x: rect.left, y: rect.top + rect.height });
 	}
 
 	/** "Go to note section": opens the backing file (new tab, so the map stays open) and jumps to the exact heading/list line the node came from — three-tier target resolution, see `resolveGoToTarget`. */
@@ -911,6 +1001,21 @@ export class MindMapView extends TextFileView implements ControllerListener {
 			// Mod+K -> Mod+Shift+L was resolved if it turns out to clash.
 			evt.preventDefault();
 			if (this.controller.selectedId) this.goToNoteSection(this.controller.selectedId);
+		} else if (mod && evt.shiftKey && evt.key.toLowerCase() === "i") {
+			// Opens the status quick-pick menu (plans/09) for the selected node —
+			// same caveat as every other Mod+Shift binding here: not known to
+			// collide with anything in this plugin or an Obsidian core default
+			// at the time this was added; rebind the same way Mod+K -> Mod+
+			// Shift+L was resolved if it turns out to clash in a live vault.
+			evt.preventDefault();
+			if (this.controller.selectedId) this.showStatusBadgeMenuForNode(this.controller.selectedId);
+		} else if (mod && evt.shiftKey && evt.key.toLowerCase() === "d") {
+			// Direct-toggle for the "Done" status badge (plans/09), skipping the
+			// quick-pick menu — confirmed free (no existing Mod+Shift+D binding
+			// in this plugin or main.ts); same live-vault-collision caveat as
+			// every other Mod+Shift binding here.
+			evt.preventDefault();
+			if (this.controller.selectedId) this.controller.toggleStatusBadge(this.controller.selectedId, "done");
 		} else if (mod && evt.key.toLowerCase() === "c") {
 			evt.preventDefault();
 			this.controller.copySelected();

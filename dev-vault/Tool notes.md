@@ -2,6 +2,7 @@
 mindmap:
   nodes:
     ^924531: { width: 480.62734375 }
+    ^jpkc9x: { badge: done }
     ^zhk7fz: { width: 195.12295226235875 }
 ---
 # Tool notes
@@ -39,8 +40,13 @@ mindmap:
               - autocomplete to select the node inside the selected document from the previous combobox
           - link is selected
             - current link is implementation is correct, it can be url, file, folder etc.
+- if the node height is too much it causes problems
+  - if the text content is too long, it overlaps with the surrounding(one below or one up) notes and they're not visible.
+    - this is the same problem with images
+      - images block to see very next items(below or up)
 - I want to add some badges to be available to show the status of the node. They will be images to show them.  Some of the most required ones are  Completed, Started, Blocked, Red Flag, Green Flag, Ready to work on. Decide to use what is best. use approaches without any licensing issues. if needed create these yourself.
-## problems to fix → [youtube](www.youtube.com) → [docu](/Users/burakucbinli/projects/obsidian/test/metadata.test.ts)
+- image views can overlap with the nodes near them
+## problems to fix → [youtube](www.youtube.com) → [docu](/Users/burakucbinli/projects/obsidian/test/metadata.test.ts) ^jpkc9x
 - bugs ^zhk7fz
   Links: [youtube](www.youtube.com)
   - no bug for now

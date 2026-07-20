@@ -1,5 +1,62 @@
 # Architectural Decision Records
 
+## 2026-07-20 — Feature: "Completed" badge renamed to "Done" + Cmd+Shift+D direct-toggle shortcut
+
+**Follow-up to the status-badges entry below.** User asked for a direct
+shortcut to apply the top badge without going through the quick-pick menu.
+**Choice:** renamed the badge (both `BadgeKey` value and label) from
+`"completed"`/"Completed" to `"done"`/"Done" — shorter, and the label some
+already-added menu items now show (below) reads more naturally as
+"Done (⌘⇧D)" than "Completed (⌘⇧D)". Safe to rename outright rather than
+alias/deprecate the old key: the feature hadn't shipped to any real vault
+yet (same session), so no persisted frontmatter uses the old value.
+`Cmd+Shift+D` toggles it directly (`Controller.toggleStatusBadge`: applies
+if unset or different, clears if already set) — confirmed free (no
+existing Mod+Shift+D binding in `main.ts` or `MindMapView.onKeyDown`, whose
+established Mod+Shift bindings are B/C/D/G/I/L/Z). `BadgeDef` gained an
+optional `hotkey` field (model/statusBadges.ts) so the one badge with a
+direct shortcut shows the same hint (via `menuItemTitle`) on its context
+menu / quick-pick item that other shortcut-bearing items already show — see
+the entry below this one for why that hint machinery exists at all.
+**Cost:** none — reuses the existing `setStatusBadge` undo/redo path.
+
+## 2026-07-20 — Feature: node status badges (Done/Started/Blocked/Red Flag/Green Flag/Ready to work on)
+
+**Scope:** `dev-vault/Tool notes.md` backlog item never picked up into
+`MASTER-PLAN.md`'s Phase 1/2 — see `plans/09-feature-status-badges.md`.
+Asked the user two rule-3-mandated performance-tradeoff questions before
+implementing:
+**Choice 1 — rendering, self-drawn inline SVG glyphs (not bundled raster
+images):** the request literally said "images," but the two options
+surfaced were (a) tiny inline SVG `<circle>`+`<text>` glyphs, same technique
+as the existing fold badge / cross-doc relation badge, vs. (b) small custom
+PNG icons embedded as `<image>` data-URIs, following the existing
+image-embed-thumbnail pattern. User picked (a).
+**Cost:** (a) is effectively free — no decode, no network/vault resolution,
+crisp at any zoom, rides the same `upsertNode` dirty-tracking and 300-node
+`CULL_THRESHOLD` culling every other per-node decoration already uses. (b)
+would have been strictly heavier per node (closest precedent:
+`bench:images`, 200 per-node `<image>` elements, ~43ms mount on a 201-node
+map — comfortably in budget alone, but stacking cost with any other images
+on the same map, plus blur risk at high zoom without multiple bundled
+resolutions).
+**Choice 2 — Cmd+Shift+I opens a quick-pick menu (not a cycle-on-repeat-press):**
+pure UX choice, not a performance tradeoff; user picked the discoverable
+option. `Mod+Shift+I` was confirmed free (no existing binding in `main.ts`
+or `MindMapView.ts`'s `onKeyDown`).
+**Implementation:** `model/statusBadges.ts` (`BadgeKey`/`BADGE_DEFS`, single
+source of truth); `MindNode.statusBadge?: string` (untyped as `BadgeKey` so
+an unrecognized frontmatter value round-trips instead of being dropped —
+same forward-compat policy as `nodeHasPersistableMeta`'s other fields);
+`mutations.setStatusBadge` + `Controller.setStatusBadge` (undo/redo stack,
+mirrors `toggleFold`); persisted via the existing `mindmap:` frontmatter
+convention (`NodeMeta.badge`, surgical text patching, not full YAML);
+`SvgRenderer.upsertStatusBadge` placed at the node's top corner opposite the
+cross-doc badge so the two never collide; context menu + `Cmd+Shift+I` +
+click-on-badge all share one `MindMapView.addStatusBadgeMenuItems` item-list
+builder.
+**Source:** `plans/09-feature-status-badges.md`.
+
 ## 2026-07-20 — Feature: bare-domain URLs, absolute file paths, and folders all open correctly for the "Link" type
 
 **Scope:** Follow-up to the URL-open bug fix below. User reported two more

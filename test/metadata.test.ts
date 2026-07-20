@@ -44,6 +44,16 @@ describe("extractMindmapData", () => {
 		const fm = ["---", "mindmap:", "  nodes:", "    ^abc123: { }", "---"].join("\n");
 		expect(extractMindmapData(fm)).toEqual({ nodes: {} });
 	});
+
+	it("parses badge node entries (plans/09)", () => {
+		const fm = ["---", "mindmap:", "  nodes:", "    ^abc123: { badge: done }", "---"].join("\n");
+		expect(extractMindmapData(fm)).toEqual({ nodes: { abc123: { badge: "done" } } });
+	});
+
+	it("captures an unrecognized badge value instead of dropping it (forward-compat with a newer plugin version)", () => {
+		const fm = ["---", "mindmap:", "  nodes:", "    ^abc123: { badge: from-the-future }", "---"].join("\n");
+		expect(extractMindmapData(fm)).toEqual({ nodes: { abc123: { badge: "from-the-future" } } });
+	});
 });
 
 describe("applyMindmapDataToTree", () => {
@@ -62,6 +72,12 @@ describe("applyMindmapDataToTree", () => {
 		const model = parseMindMap(["# Root", "## Branch A ^abc123"].join("\n"), "fallback");
 		applyMindmapDataToTree(model.byId, { nodes: { abc123: { externalRef: true } } });
 		expect(model.root.children[0].externalRelationTarget).toBe(true);
+	});
+
+	it("sets statusBadge on matching nodes by block id (plans/09)", () => {
+		const model = parseMindMap(["# Root", "## Branch A ^abc123"].join("\n"), "fallback");
+		applyMindmapDataToTree(model.byId, { nodes: { abc123: { badge: "blocked" } } });
+		expect(model.root.children[0].statusBadge).toBe("blocked");
 	});
 });
 
@@ -209,6 +225,14 @@ describe("nodeHasPersistableMeta (R1a item 2: relation-target extension)", () =>
 		const branch = model.root.children[0];
 		expect(nodeHasPersistableMeta(branch)).toBe(false);
 		branch.isRelationTarget = true;
+		expect(nodeHasPersistableMeta(branch)).toBe(true);
+	});
+
+	it("is true purely from statusBadge, independent of fold/pos/width (plans/09)", () => {
+		const model = parseMindMap(["# Root", "## Branch A"].join("\n"), "fallback");
+		const branch = model.root.children[0];
+		expect(nodeHasPersistableMeta(branch)).toBe(false);
+		branch.statusBadge = "ready";
 		expect(nodeHasPersistableMeta(branch)).toBe(true);
 	});
 });

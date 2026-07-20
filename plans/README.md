@@ -13,3 +13,4 @@ Subplans (one per item from `dev-vault/Tool notes.md`):
 - [06 — Feature: tree copy to OS clipboard](06-feature-tree-copy-os-clipboard.md)
 - [07 — Feature: image display](07-feature-image-display.md)
 - [08 — Feature: Ctrl+M toggle](08-feature-ctrl-m-toggle.md)
+- [09 — Feature: node status badges](09-feature-status-badges.md)

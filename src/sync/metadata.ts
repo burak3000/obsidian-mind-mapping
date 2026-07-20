@@ -6,6 +6,8 @@ export interface NodeMeta {
 	width?: number;
 	/** Durable twin of `MindNode.externalRelationTarget` — see that field's doc comment (model/types.ts) for why a cross-doc relation target needs frontmatter persistence instead of a recomputed-on-parse flag like `isRelationTarget`. */
 	externalRef?: boolean;
+	/** Durable twin of `MindNode.statusBadge` — a plain string, not `BadgeKey`, so a value written by a newer plugin version round-trips even if this version's `BADGE_DEFS` (model/statusBadges.ts) doesn't recognize it yet. */
+	badge?: string;
 }
 
 export interface MindmapFrontmatterData {
@@ -13,7 +15,7 @@ export interface MindmapFrontmatterData {
 }
 
 function hasMeta(meta: NodeMeta): boolean {
-	return meta.folded === true || meta.pos !== undefined || meta.width !== undefined || meta.externalRef === true;
+	return meta.folded === true || meta.pos !== undefined || meta.width !== undefined || meta.externalRef === true || meta.badge !== undefined;
 }
 
 /**
@@ -46,7 +48,8 @@ export function nodeHasPersistableMeta(node: MindNode): boolean {
 		node.manualPos !== undefined ||
 		node.manualWidth !== undefined ||
 		node.isRelationTarget === true ||
-		node.externalRelationTarget === true
+		node.externalRelationTarget === true ||
+		node.statusBadge !== undefined
 	);
 }
 
@@ -118,6 +121,7 @@ const NODE_ENTRY_RE = /^ {4}\^([A-Za-z0-9_-]+):\s*\{([^}]*)\}\s*$/;
 const POS_RE = /\bpos:\s*\[\s*(-?\d+(?:\.\d+)?)\s*,\s*(-?\d+(?:\.\d+)?)\s*\]/;
 const WIDTH_RE = /\bwidth:\s*(-?\d+(?:\.\d+)?)/;
 const EXTERNAL_REF_RE = /\bexternalRef:\s*true\b/;
+const BADGE_RE = /\bbadge:\s*([A-Za-z0-9_-]+)\b/;
 
 /**
  * Reads our `mindmap:` subtree out of a raw frontmatter block (verbatim
@@ -158,6 +162,8 @@ export function extractMindmapData(frontmatterRaw: string | null): MindmapFrontm
 				const widthMatch = WIDTH_RE.exec(body);
 				if (widthMatch) meta.width = parseFloat(widthMatch[1]);
 				if (EXTERNAL_REF_RE.test(body)) meta.externalRef = true;
+				const badgeMatch = BADGE_RE.exec(body);
+				if (badgeMatch) meta.badge = badgeMatch[1];
 				if (hasMeta(meta)) nodes[id] = meta;
 			}
 		}
@@ -174,6 +180,7 @@ export function applyMindmapDataToTree(byId: Map<string, MindNode>, data: Mindma
 		if (meta.pos) node.manualPos = { x: meta.pos[0], y: meta.pos[1] };
 		if (meta.width !== undefined) node.manualWidth = meta.width;
 		if (meta.externalRef) node.externalRelationTarget = true;
+		if (meta.badge !== undefined) node.statusBadge = meta.badge;
 	}
 }
 
@@ -195,6 +202,7 @@ export function applyMindmapData(existingFrontmatterRaw: string | null, data: Mi
 			if (meta.pos) parts.push(`pos: [${meta.pos[0]}, ${meta.pos[1]}]`);
 			if (meta.width !== undefined) parts.push(`width: ${meta.width}`);
 			if (meta.externalRef) parts.push("externalRef: true");
+			if (meta.badge !== undefined) parts.push(`badge: ${meta.badge}`);
 			ourBlockLines.push(`    ^${id}: { ${parts.join(", ")} }`);
 		}
 	}

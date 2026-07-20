@@ -130,6 +130,50 @@ describe("Controller", () => {
 		expect(leaf.folded).toBe(false);
 	});
 
+	it("setStatusBadge sets and clears a node's status, and is undoable/redoable", () => {
+		const controller = makeController();
+		const branchA = controller.model.root.children[0];
+		expect(branchA.statusBadge).toBeUndefined();
+
+		controller.setStatusBadge(branchA.id, "done");
+		expect(branchA.statusBadge).toBe("done");
+
+		controller.setStatusBadge(branchA.id, "blocked");
+		expect(branchA.statusBadge).toBe("blocked");
+
+		controller.undo();
+		expect(branchA.statusBadge).toBe("done");
+
+		controller.undo();
+		expect(branchA.statusBadge).toBeUndefined();
+
+		controller.redo();
+		expect(branchA.statusBadge).toBe("done");
+
+		controller.setStatusBadge(branchA.id, undefined);
+		expect(branchA.statusBadge).toBeUndefined();
+	});
+
+	it("setStatusBadge is a no-op on an unknown node id", () => {
+		const controller = makeController();
+		expect(() => controller.setStatusBadge("nonexistent", "done")).not.toThrow();
+	});
+
+	it("toggleStatusBadge sets the badge if unset/different, clears it if already set (Cmd+Shift+D -> \"done\")", () => {
+		const controller = makeController();
+		const branchA = controller.model.root.children[0];
+
+		controller.toggleStatusBadge(branchA.id, "done");
+		expect(branchA.statusBadge).toBe("done");
+
+		controller.toggleStatusBadge(branchA.id, "done");
+		expect(branchA.statusBadge).toBeUndefined();
+
+		controller.setStatusBadge(branchA.id, "blocked");
+		controller.toggleStatusBadge(branchA.id, "done");
+		expect(branchA.statusBadge).toBe("done"); // overrides an existing different badge rather than toggling it off
+	});
+
 	it("revealAndSelect unfolds every folded ancestor of a hidden node and selects it", () => {
 		const controller = makeController(["# Root", "## Branch A", "- a1", "  - a2"].join("\n"));
 		const branchA = controller.model.root.children[0];
@@ -196,6 +240,21 @@ describe("Controller", () => {
 		// original untouched
 		expect(controller.model.byId.has(branchA.id)).toBe(true);
 		expect(branchA.parent).toBe(controller.model.root);
+	});
+
+	it("copy then paste carries the status badge onto the clone (semantic state, unlike manualPos/colorKey)", () => {
+		const controller = makeController();
+		const branchA = controller.model.root.children[0];
+		const branchB = controller.model.root.children[1];
+		controller.setStatusBadge(branchA.id, "started");
+		controller.select(branchA.id);
+		controller.copySelected();
+
+		controller.select(branchB.id);
+		controller.pasteToSelected();
+
+		const pasted = branchB.children[0];
+		expect(pasted.statusBadge).toBe("started");
 	});
 
 	it("paste can be repeated, cloning fresh ids each time", () => {
