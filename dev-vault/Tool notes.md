@@ -1,13 +1,17 @@
 ---
 mindmap:
   nodes:
-    ^924531: { width: 480.62734375 }
+    ^924531: { width: 480.62734375, badge: done }
+    ^i00kd6: { folded: true }
+    ^1r81se: { badge: done }
+    ^fngdck: { badge: done }
+    ^cedzjm: { badge: done }
     ^jpkc9x: { badge: done }
     ^zhk7fz: { width: 195.12295226235875 }
 ---
 # Tool notes
 
-## new features in my mind to be implemented
+## new features in my mind to be implemented ^i00kd6
 - show links and relations ^924531
   - two different association types
     - link
@@ -40,12 +44,12 @@ mindmap:
               - autocomplete to select the node inside the selected document from the previous combobox
           - link is selected
             - current link is implementation is correct, it can be url, file, folder etc.
-- if the node height is too much it causes problems
+- if the node height is too much it causes problems ^1r81se
   - if the text content is too long, it overlaps with the surrounding(one below or one up) notes and they're not visible.
     - this is the same problem with images
       - images block to see very next items(below or up)
-- I want to add some badges to be available to show the status of the node. They will be images to show them.  Some of the most required ones are  Completed, Started, Blocked, Red Flag, Green Flag, Ready to work on. Decide to use what is best. use approaches without any licensing issues. if needed create these yourself.
-- image views can overlap with the nodes near them
+- I want to add some badges to be available to show the status of the node. They will be images to show them.  Some of the most required ones are  Completed, Started, Blocked, Red Flag, Green Flag, Ready to work on. Decide to use what is best. use approaches without any licensing issues. if needed create these yourself. ^fngdck
+- image views can overlap with the nodes near them ^cedzjm
 ## problems to fix → [youtube](www.youtube.com) → [docu](/Users/burakucbinli/projects/obsidian/test/metadata.test.ts) ^jpkc9x
 - bugs ^zhk7fz
   Links: [youtube](www.youtube.com)
@@ -53,3 +57,29 @@ mindmap:
 - UX
   - if scrolled horizontally or vertically node edit box remains in the beginning position
 ## www.youtube.com link is added but it does not go to the app, just opens a new note with that name
+## input to mind map skill
+- I want you to add a new SKILL to the repository
+  - I'll check in to the repository
+    - but it will be copied to the claude directory
+      - to be available for the other projects/repositories
+  - Analyze and inspect the codebase to understand
+    - features of the plugin
+      - how it shows links and relations etc
+  - then creates a mind map out of inputs in an .md format this plugin can render
+    - uses mind mapping best practices
+  - parameters
+    - input file
+      - to be processed
+      - can be
+        - single input file
+        - multiple input files
+    - output file
+      - optional
+        - if it is not given a meaningful file name will be generated
+    - output folder
+      - .md file creation folder
+  - it must work OS independent
+    - so the scripts it uses must support
+      - windows
+      - mac
+      - linux
