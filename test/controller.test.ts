@@ -557,6 +557,26 @@ describe("Controller clipboard export/paste (plan item 06: tree copy to OS clipb
 		expect(controller.getClipboardMarkdown()).toBe(["- Branch A", "  - a"].join("\n"));
 	});
 
+	it("getClipboardMarkdown emits bare text (no list marker) for a lone leaf node — nothing to preserve structure for", () => {
+		const controller = makeController();
+		const branchB = controller.model.root.children[1]; // childless
+		controller.select(branchB.id);
+		controller.copySelected();
+
+		expect(controller.getClipboardMarkdown()).toBe("Branch B");
+	});
+
+	it("getClipboardMarkdown emits bare text lines for a multi-select of only leaf nodes", () => {
+		const controller = makeController();
+		const a = controller.model.root.children[0].children[0]; // "a", childless
+		const branchB = controller.model.root.children[1]; // childless
+		controller.select(a.id);
+		controller.toggleSelection(branchB.id);
+		controller.copySelected();
+
+		expect(controller.getClipboardMarkdown()).toBe(["a", "Branch B"].join("\n"));
+	});
+
 	it("pasteSubtrees inserts already-parsed external nodes as one undo step, same as pasteToSelected", () => {
 		const controller = makeController();
 		const branchB = controller.model.root.children[1];

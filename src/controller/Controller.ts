@@ -374,9 +374,27 @@ export class Controller {
 		this.emitChange();
 	}
 
-	/** The subtree(s) currently on the internal clipboard, serialized as plain markdown (plan item 06) — the view layer writes this to the OS clipboard right after `copySelected`/`cutSelected`. Null when there's nothing to copy. */
+	/**
+	 * The subtree(s) currently on the internal clipboard, serialized as plain
+	 * markdown (plan item 06) — the view layer writes this to the OS
+	 * clipboard right after `copySelected`/`cutSelected`. Null when there's
+	 * nothing to copy.
+	 *
+	 * When every copied node is a childless leaf, this skips the `- ` list
+	 * marker `serializeSubtree` would otherwise add and emits bare text
+	 * lines instead: the marker exists so a *nested* copy re-parses back
+	 * into the same tree shape (see serializeSubtree's own doc comment), but
+	 * a leaf has no structure to preserve — `parseExternalPaste`'s plain-text
+	 * fallback reconstructs one leaf node per line just as well, so pasting
+	 * a single copied node into another app doesn't leak this plugin's own
+	 * markdown-list export format as a stray bullet in front of the text.
+	 */
 	getClipboardMarkdown(): string | null {
-		return this.clipboard ? serializeSubtrees(this.clipboard) : null;
+		if (!this.clipboard) return null;
+		if (this.clipboard.every((n) => n.children.length === 0)) {
+			return this.clipboard.map((n) => n.text).join("\n");
+		}
+		return serializeSubtrees(this.clipboard);
 	}
 
 	/** Ctrl/Cmd+/ (R13): fold/unfold — wired up starting M4, but the primitive lives here since it's a plain mutation. */
