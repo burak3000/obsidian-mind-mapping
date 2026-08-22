@@ -100,7 +100,13 @@ export class InlineEditor {
 		});
 
 		input.addEventListener("keydown", (evt) => {
-			evt.stopPropagation(); // keep global node-navigation shortcuts from firing while typing
+			// Paste is deliberately let through: a text clipboard is handled
+			// entirely by the field's own native paste below, but an image on
+			// the clipboard can't be typed into a textarea, so MindMapView's
+			// keydown handler still needs to see Mod+V to turn that case into
+			// a child node (see its onKeyDown and handlePaste).
+			const isPaste = (evt.ctrlKey || evt.metaKey) && evt.key.toLowerCase() === "v";
+			if (!isPaste) evt.stopPropagation(); // keep other global node-navigation shortcuts from firing while typing
 			if (evt.key === "Enter" && !evt.shiftKey) {
 				// Closes editing and leaves the node selected (same as
 				// blur/onCommit) rather than immediately creating a new

@@ -828,6 +828,14 @@ export class MindMapView extends TextFileView implements ControllerListener {
 			return;
 		}
 
+		// Editing a node's label: a text clipboard is left entirely to the
+		// field's own native paste (already happened, or is a no-op source
+		// like an unsupported clipboard type) — inserting it as a node here
+		// too would duplicate it as both label text and a new child. This
+		// also covers the context-menu "Paste" item, which has no editing
+		// guard of its own and calls straight in here.
+		if (this.editingNodeId) return;
+
 		let osText: string | null = null;
 		try {
 			osText = (await navigator.clipboard?.readText()) ?? null;
@@ -923,8 +931,20 @@ export class MindMapView extends TextFileView implements ControllerListener {
 	// --- Keyboard shortcuts (plan §8) ---
 
 	private onKeyDown(evt: KeyboardEvent): void {
-		if (this.inlineEditor || !this.controller) return; // InlineEditor owns keys while editing
+		if (!this.controller) return;
 		const mod = evt.ctrlKey || evt.metaKey;
+
+		if (this.inlineEditor) {
+			// InlineEditor owns every other key while editing. Paste is the
+			// one exception: an image on the clipboard can't be typed into
+			// the field, so it still needs to reach handlePaste to become a
+			// child node (see InlineEditor's own keydown handler, which lets
+			// this one combination bubble). Left un-prevented so the native
+			// paste still fills the field when the clipboard instead holds
+			// plain text — handlePaste no-ops in that case.
+			if (mod && evt.key.toLowerCase() === "v") this.handlePaste();
+			return;
+		}
 
 		if (mod && evt.key.toLowerCase() === "f") {
 			evt.preventDefault();

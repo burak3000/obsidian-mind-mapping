@@ -16,10 +16,11 @@ describe("wrapText", () => {
 		expect(text(lines)).toEqual(["one two", "three four", "five"]);
 	});
 
-	it("never breaks a single word even if it exceeds the limit", () => {
+	it("hard-breaks a single word that exceeds the limit, into chunks no wider than it", () => {
 		const lines = wrapText("supercalifragilisticexpialidocious", 10);
-		expect(lines.length).toBe(1);
-		expect(text(lines)[0]).toBe("supercalifragilisticexpialidocious");
+		expect(lines.length).toBe(4);
+		for (const line of lines) expect(lineLength(line)).toBeLessThanOrEqual(10);
+		expect(text(lines).join("")).toBe("supercalifragilisticexpialidocious");
 	});
 
 	it("treats an empty string as a single empty line, not zero lines", () => {

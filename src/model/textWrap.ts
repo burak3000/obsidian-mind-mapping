@@ -24,8 +24,11 @@ function tokenize(text: string): WordToken[] {
  * Greedy word-wrap: packs tokens onto a line while the running character
  * count (each word plus one space before it, except the first on a line)
  * stays within `maxCharsPerLine`. A single token longer than the limit is
- * left whole on its own line rather than hyphenated — out of scope (not
- * requested; real complexity for an edge case a user is unlikely to hit).
+ * hard-broken into fixed-size chunks (not hyphenated — out of scope, real
+ * complexity for an edge case) rather than left whole: `computeNodeBox`
+ * sizes the node's box to this same `maxCharsPerLine` ceiling, so a line
+ * left wider than the limit rendered past the box's border instead of
+ * wrapping inside it.
  */
 export function wrapTokens(tokens: WordToken[], maxCharsPerLine: number): WordToken[][] {
 	if (tokens.length === 0) return [[]];
@@ -34,6 +37,17 @@ export function wrapTokens(tokens: WordToken[], maxCharsPerLine: number): WordTo
 	let current: WordToken[] = [];
 	let currentLen = 0;
 	for (const tok of tokens) {
+		if (tok.text.length > limit) {
+			if (current.length > 0) {
+				lines.push(current);
+				current = [];
+				currentLen = 0;
+			}
+			for (let i = 0; i < tok.text.length; i += limit) {
+				lines.push([{ text: tok.text.slice(i, i + limit), link: tok.link, spaceBefore: false }]);
+			}
+			continue;
+		}
 		const isFirstOnLine = current.length === 0;
 		const addLen = tok.text.length + (isFirstOnLine ? 0 : 1);
 		if (!isFirstOnLine && currentLen + addLen > limit) {
@@ -45,7 +59,7 @@ export function wrapTokens(tokens: WordToken[], maxCharsPerLine: number): WordTo
 			currentLen += addLen;
 		}
 	}
-	lines.push(current);
+	if (current.length > 0) lines.push(current);
 	return lines;
 }
 

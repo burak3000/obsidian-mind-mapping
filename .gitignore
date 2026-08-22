@@ -12,3 +12,4 @@ fixtures/*.md
 dev-vault/fixtures/
 *.log
 .DS_Store
+temp/
