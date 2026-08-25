@@ -1,14 +1,23 @@
 import { flextree } from "d3-flextree";
 import { MindNode } from "../model/types";
-import { wrapText, lineLength } from "../model/textWrap";
+import { wrapText, lineLength, lineText } from "../model/textWrap";
 import { getImageEmbed } from "../model/links";
+
+/**
+ * Real rendered text width in px at `fontSizePx`, or null if unavailable in
+ * this environment (see render/textMeasure.ts) — box sizing falls back to
+ * the character-count estimate when null. Kept as a plain injectable
+ * function (not imported directly) so this module stays DOM-free and its
+ * existing benchmarks/tests are unaffected unless a caller opts in.
+ */
+export type TextMeasurer = (text: string, fontSizePx: number) => number | null;
 
 export type LayoutMode = "balanced" | "right-only" | "left-only";
 
 export interface LayoutConfig {
 	nodeHeight: number; // px, single-line row height — baseline, tuned for `baselineFontSize`
 	siblingGap: number; // px, vertical gap between sibling rows
-	levelGap: number; // px, horizontal gap between depth levels
+	levelGap: number; // px, horizontal gap between depth levels — flat, not depth-scaled (see the fold badge's outward reach in SvgRenderer for the floor this can't safely go below)
 	charWidth: number; // px, approx width per character — baseline, tuned for `baselineFontSize`
 	minNodeWidth: number; // baseline
 	maxCharsPerLine: number; // default wrap width in characters (~60) before text moves to a new line — depth-invariant; a node's own manualWidth (already in real px) overrides the *pixel* ceiling this maps to, not this character count
@@ -28,7 +37,15 @@ export interface LayoutConfig {
 export const DEFAULT_LAYOUT_CONFIG: LayoutConfig = {
 	nodeHeight: 28,
 	siblingGap: 10,
-	levelGap: 60,
+	// Shrunk from 60 (kept just clear of the fold badge's ~29px outward
+	// reach — BADGE_OUTWARD_OFFSET + BADGE_HIT_RADIUS in SvgRenderer.ts —
+	// so the badge never touches the next node; this is close to that
+	// floor already, only a few px of clearance left): a flat per-level gap
+	// this large, unscaled by depth, was eating enough width per level that
+	// children a few levels deep routinely fell past the right edge of the
+	// viewport even when their parent chain was still fully visible,
+	// reading as "missing" nodes rather than just off-screen.
+	levelGap: 32,
 	charWidth: 7,
 	minNodeWidth: 40,
 	maxCharsPerLine: 60,
@@ -91,7 +108,7 @@ export interface NodeBox {
  * whether/when the image actually finishes loading (decision A: no
  * layout reflow on image load).
  */
-export function computeNodeBox(text: string, cfg: NodeBoxConfig, depth: number, manualWidth?: number): NodeBox {
+export function computeNodeBox(text: string, cfg: NodeBoxConfig, depth: number, manualWidth?: number, measure?: TextMeasurer): NodeBox {
 	const scale = scaleForDepth(depth, cfg);
 	const charWidth = cfg.charWidth * scale;
 	const paddingX = cfg.paddingX * scale;
@@ -103,7 +120,14 @@ export function computeNodeBox(text: string, cfg: NodeBoxConfig, depth: number, 
 	const maxCharsPerLine = Math.max(1, Math.floor((maxWidthPx - paddingX) / charWidth));
 	const lines = wrapText(text, maxCharsPerLine);
 	const longestChars = Math.max(1, ...lines.map(lineLength));
-	const textW = Math.min(maxWidthPx, Math.max(minNodeWidth, longestChars * charWidth + paddingX));
+	// Prefer the real rendered width of the widest line (matches the actual
+	// glyphs exactly, unlike the flat per-character estimate below, which
+	// overshoots for narrow-glyph text — see DECISIONS.md's M1 entry, which
+	// flagged this as revisitable). Falls back to the estimate whenever real
+	// measurement isn't available (no measurer passed, or the environment
+	// doesn't support it — see render/textMeasure.ts).
+	const measuredWidth = measure ? measureLinesWidth(lines, measure, fontSizeForDepth(depth, cfg)) : null;
+	const textW = Math.min(maxWidthPx, Math.max(minNodeWidth, (measuredWidth ?? longestChars * charWidth) + paddingX));
 	const textH = lines.length <= 1 ? nodeHeight : nodeHeight + (lines.length - 1) * lineHeight;
 
 	const embed = getImageEmbed(text);
@@ -118,8 +142,19 @@ export function computeNodeBox(text: string, cfg: NodeBoxConfig, depth: number, 
 	return { w, h, lines, imageBox };
 }
 
-export function estimateNodeWidth(text: string, cfg: NodeBoxConfig, depth: number, manualWidth?: number): number {
-	return computeNodeBox(text, cfg, depth, manualWidth).w;
+export function estimateNodeWidth(text: string, cfg: NodeBoxConfig, depth: number, manualWidth?: number, measure?: TextMeasurer): number {
+	return computeNodeBox(text, cfg, depth, manualWidth, measure).w;
+}
+
+/** The widest line's real measured width across `lines`, or null the moment any single line can't be measured — a partial mix of measured and estimated widths within the same box would be an inconsistent basis for "the widest line", so this falls back to the estimate entirely rather than partially. */
+function measureLinesWidth(lines: ReturnType<typeof wrapText>, measure: TextMeasurer, fontSizePx: number): number | null {
+	let max = 0;
+	for (const line of lines) {
+		const w = measure(lineText(line), fontSizePx);
+		if (w === null) return null;
+		if (w > max) max = w;
+	}
+	return max;
 }
 
 /**
@@ -135,10 +170,10 @@ export function estimateNodeWidth(text: string, cfg: NodeBoxConfig, depth: numbe
  */
 const boxCache = new WeakMap<MindNode, { text: string; manualWidth: number | undefined; depth: number; box: NodeBox }>();
 
-function nodeBoxFor(node: MindNode, cfg: LayoutConfig): NodeBox {
+function nodeBoxFor(node: MindNode, cfg: LayoutConfig, measure?: TextMeasurer): NodeBox {
 	const cached = boxCache.get(node);
 	if (cached && cached.text === node.text && cached.manualWidth === node.manualWidth && cached.depth === node.depth) return cached.box;
-	const box = computeNodeBox(node.text, cfg, node.depth, node.manualWidth);
+	const box = computeNodeBox(node.text, cfg, node.depth, node.manualWidth, measure);
 	boxCache.set(node, { text: node.text, manualWidth: node.manualWidth, depth: node.depth, box });
 	return box;
 }
@@ -176,7 +211,15 @@ function partitionChildren(children: MindNode[]): { left: MindNode[]; right: Min
  * children are the caller's responsibility (see `computeLayout` and
  * `layoutManualNode` for the two anchor cases: root, and a manual node).
  */
-function layoutSide(autoChildren: MindNode[], cfg: LayoutConfig, side: "L" | "R", anchorX: number, anchorY: number, anchorDepthExtent: number): void {
+function layoutSide(
+	autoChildren: MindNode[],
+	cfg: LayoutConfig,
+	side: "L" | "R",
+	anchorX: number,
+	anchorY: number,
+	anchorDepthExtent: number,
+	measure?: TextMeasurer
+): void {
 	if (autoChildren.length === 0) return;
 
 	const virtualRoot: MindNode = {
@@ -210,7 +253,7 @@ function layoutSide(autoChildren: MindNode[], cfg: LayoutConfig, side: "L" | "R"
 		// instead of being pushed out past its box.
 		nodeSize: (n) => {
 			if (n.data === virtualRoot) return [0, anchorDepthExtent];
-			const box = nodeBoxFor(n.data, cfg);
+			const box = nodeBoxFor(n.data, cfg, measure);
 			return [box.h + cfg.siblingGap, box.w + cfg.levelGap];
 		},
 	});
@@ -221,7 +264,7 @@ function layoutSide(autoChildren: MindNode[], cfg: LayoutConfig, side: "L" | "R"
 		if (n.data === virtualRoot) return;
 		const node = n.data;
 		const depthAxis = n.y;
-		const box = nodeBoxFor(node, cfg);
+		const box = nodeBoxFor(node, cfg, measure);
 		const w = box.w;
 		// `depthAxis` is the box's *inner* edge (the one facing the anchor/
 		// parent) on both sides — flextree derives it from ancestors' own
@@ -257,7 +300,7 @@ function layoutSide(autoChildren: MindNode[], cfg: LayoutConfig, side: "L" | "R"
 		const node = n.data;
 		if (node.folded) return;
 		for (const child of node.children) {
-			if (child.manualPos) layoutManualNode(child, cfg, node.layout!.x);
+			if (child.manualPos) layoutManualNode(child, cfg, node.layout!.x, measure);
 		}
 	});
 }
@@ -270,17 +313,17 @@ function layoutSide(autoChildren: MindNode[], cfg: LayoutConfig, side: "L" | "R"
  * of its parent the pin actually landed on, so the branch draws correctly
  * regardless of where the user dropped it.
  */
-function layoutManualNode(node: MindNode, cfg: LayoutConfig, parentX: number): void {
+function layoutManualNode(node: MindNode, cfg: LayoutConfig, parentX: number, measure?: TextMeasurer): void {
 	const pos = node.manualPos!;
 	const side: "L" | "R" = pos.x < parentX ? "L" : "R";
-	const box = nodeBoxFor(node, cfg);
+	const box = nodeBoxFor(node, cfg, measure);
 	node.layout = { x: pos.x, y: pos.y, w: box.w, h: box.h, side };
 
 	if (node.folded) return;
 	const autoKids = node.children.filter((c) => !c.manualPos);
-	layoutSide(autoKids, cfg, side, pos.x, pos.y, box.w + cfg.levelGap);
+	layoutSide(autoKids, cfg, side, pos.x, pos.y, box.w + cfg.levelGap, measure);
 	for (const child of node.children) {
-		if (child.manualPos) layoutManualNode(child, cfg, pos.x);
+		if (child.manualPos) layoutManualNode(child, cfg, pos.x, measure);
 	}
 }
 
@@ -294,8 +337,8 @@ function layoutManualNode(node: MindNode, cfg: LayoutConfig, parentX: number): v
  * Folded nodes' children are excluded entirely, so layout cost is
  * proportional to *visible* nodes (R13), not the full tree.
  */
-export function computeLayout(root: MindNode, cfg: LayoutConfig = DEFAULT_LAYOUT_CONFIG): void {
-	const rootBox = nodeBoxFor(root, cfg);
+export function computeLayout(root: MindNode, cfg: LayoutConfig = DEFAULT_LAYOUT_CONFIG, measure?: TextMeasurer): void {
+	const rootBox = nodeBoxFor(root, cfg, measure);
 	root.layout = { x: 0, y: 0, w: rootBox.w, h: rootBox.h, side: "R" };
 	if (root.folded) return;
 
@@ -303,16 +346,16 @@ export function computeLayout(root: MindNode, cfg: LayoutConfig = DEFAULT_LAYOUT
 	const autoChildren = root.children.filter((c) => !c.manualPos);
 
 	if (cfg.mode === "right-only") {
-		layoutSide(autoChildren, cfg, "R", 0, 0, rootDepthExtent);
+		layoutSide(autoChildren, cfg, "R", 0, 0, rootDepthExtent, measure);
 	} else if (cfg.mode === "left-only") {
-		layoutSide(autoChildren, cfg, "L", 0, 0, rootDepthExtent);
+		layoutSide(autoChildren, cfg, "L", 0, 0, rootDepthExtent, measure);
 	} else {
 		const { left, right } = partitionChildren(autoChildren);
-		layoutSide(left, cfg, "L", 0, 0, rootDepthExtent);
-		layoutSide(right, cfg, "R", 0, 0, rootDepthExtent);
+		layoutSide(left, cfg, "L", 0, 0, rootDepthExtent, measure);
+		layoutSide(right, cfg, "R", 0, 0, rootDepthExtent, measure);
 	}
 
 	for (const child of root.children) {
-		if (child.manualPos) layoutManualNode(child, cfg, 0);
+		if (child.manualPos) layoutManualNode(child, cfg, 0, measure);
 	}
 }

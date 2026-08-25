@@ -3,6 +3,7 @@ import { parseMindMap } from "../sync/parser";
 import { serializeMindMap, serializeSubtree, SerializeConfig } from "../sync/serializer";
 import { computeLayout, DEFAULT_LAYOUT_CONFIG } from "../layout/layoutEngine";
 import { SvgRenderer } from "../render/SvgRenderer";
+import { measureTextWidth } from "../render/textMeasure";
 import { Controller, ControllerListener } from "../controller/Controller";
 import { InlineEditor } from "./InlineEditor";
 import { debounce } from "../sync/debounce";
@@ -188,7 +189,7 @@ export class MindMapView extends TextFileView implements ControllerListener {
 		const model = parseMindMap(this.data, fallbackTitle);
 		assignMissingColors(model.root);
 		assignMissingSides(model.root);
-		computeLayout(model.root, this.layoutConfig);
+		computeLayout(model.root, this.layoutConfig, measureTextWidth);
 		// R1a/R2: classify every node's links before the first mount, so
 		// relation arrows and cross-doc badges are present from the very first
 		// paint, not just after the first edit.
@@ -231,7 +232,7 @@ export class MindMapView extends TextFileView implements ControllerListener {
 		if (!this.controller || !this.renderer) return;
 		assignMissingColors(this.controller.model.root);
 		assignMissingSides(this.controller.model.root);
-		computeLayout(this.controller.model.root, this.layoutConfig);
+		computeLayout(this.controller.model.root, this.layoutConfig, measureTextWidth);
 		// R1a/R2: re-classify every node's links against the now-current tree
 		// (a rename/delete/undo can change which block ids exist) *before*
 		// ensurePersistentIds/serialize, since both depend on the
@@ -1108,7 +1109,7 @@ export class MindMapView extends TextFileView implements ControllerListener {
 		});
 		assignMissingColors(newModel.root);
 		assignMissingSides(newModel.root);
-		computeLayout(newModel.root, this.layoutConfig);
+		computeLayout(newModel.root, this.layoutConfig, measureTextWidth);
 		const activeRelations = resolveRelations(newModel, this.file?.basename ?? null);
 
 		let newSelectedId: string | null = null;

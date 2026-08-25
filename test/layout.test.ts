@@ -21,6 +21,34 @@ it("estimateNodeWidth clamps to the configured min/max width at a given depth", 
 	expect(estimateNodeWidth("x".repeat(200), DEFAULT_LAYOUT_CONFIG, 0)).toBe(defaultWrapWidthForDepth(0, DEFAULT_LAYOUT_CONFIG));
 });
 
+describe("computeNodeBox with a real text measurer (fidelity vs. the flat character-count estimate)", () => {
+	it("uses the measured width instead of the character-count estimate when a measurer is supplied", () => {
+		const scale = scaleForDepth(0, DEFAULT_LAYOUT_CONFIG);
+		const paddingX = DEFAULT_LAYOUT_CONFIG.paddingX * scale;
+		// Comfortably clear of both the minNodeWidth floor and the wrap
+		// ceiling, so this exercises the measured value itself, not a clamp.
+		const measured = 200;
+		const box = computeNodeBox("narrow glyphs", DEFAULT_LAYOUT_CONFIG, 0, undefined, () => measured);
+		expect(box.w).toBeCloseTo(measured + paddingX);
+	});
+
+	it("falls back to the character-count estimate when the measurer returns null (e.g. jsdom, no real font metrics)", () => {
+		const withMeasurer = computeNodeBox("short title", DEFAULT_LAYOUT_CONFIG, 0, undefined, () => null);
+		const withoutMeasurer = computeNodeBox("short title", DEFAULT_LAYOUT_CONFIG, 0);
+		expect(withMeasurer.w).toBe(withoutMeasurer.w);
+	});
+
+	it("still clamps the measured width to the wrap ceiling and the minimum node width", () => {
+		const scale = scaleForDepth(0, DEFAULT_LAYOUT_CONFIG);
+		const ceiling = defaultWrapWidthForDepth(0, DEFAULT_LAYOUT_CONFIG);
+		const tooWide = computeNodeBox("x", DEFAULT_LAYOUT_CONFIG, 0, undefined, () => ceiling * 10);
+		expect(tooWide.w).toBeLessThanOrEqual(ceiling);
+
+		const tooNarrow = computeNodeBox("x", DEFAULT_LAYOUT_CONFIG, 0, undefined, () => 0);
+		expect(tooNarrow.w).toBe(DEFAULT_LAYOUT_CONFIG.minNodeWidth * scale);
+	});
+});
+
 describe("computeNodeBox (long-text wrapping)", () => {
 	it("keeps a short text on one line at that depth's single-row height", () => {
 		const box = computeNodeBox("short title", DEFAULT_LAYOUT_CONFIG, 1);

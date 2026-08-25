@@ -71,3 +71,8 @@ export function wrapText(text: string, maxCharsPerLine: number): WordToken[][] {
 export function lineLength(line: WordToken[]): number {
 	return line.reduce((sum, t) => sum + t.text.length + (t.spaceBefore ? 1 : 0), 0);
 }
+
+/** The exact string a line renders as (same concatenation `SvgRenderer.appendWordTspans` builds tspan-by-tspan) — used to measure a line's real rendered pixel width, not just its character count. */
+export function lineText(line: WordToken[]): string {
+	return line.map((t) => (t.spaceBefore ? " " : "") + t.text).join("");
+}

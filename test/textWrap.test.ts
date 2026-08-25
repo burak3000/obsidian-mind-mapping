@@ -1,7 +1,7 @@
 import { describe, expect, it } from "vitest";
-import { wrapText, lineLength } from "../src/model/textWrap";
+import { wrapText, lineLength, lineText } from "../src/model/textWrap";
 
-const text = (lines: ReturnType<typeof wrapText>) => lines.map((l) => l.map((t) => (t.spaceBefore ? " " : "") + t.text).join(""));
+const text = (lines: ReturnType<typeof wrapText>) => lines.map(lineText);
 
 describe("wrapText", () => {
 	it("keeps short text on a single line", () => {
@@ -41,5 +41,10 @@ describe("wrapText", () => {
 	it("lineLength counts words plus one space between each", () => {
 		const lines = wrapText("ab cd", 60);
 		expect(lineLength(lines[0])).toBe(5); // "ab cd"
+	});
+
+	it("lineText reconstructs the exact rendered string for a line", () => {
+		const lines = wrapText("one two three four five", 12);
+		expect(lines.map(lineText)).toEqual(["one two", "three four", "five"]);
 	});
 });
