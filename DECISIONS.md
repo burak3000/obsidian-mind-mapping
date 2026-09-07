@@ -1,5 +1,89 @@
 # Architectural Decision Records
 
+## 2026-09-05 — Feature/fix: pasted-image attachments moved to a `{mapName}_attachments` sibling folder; wikilink embed → standard markdown embed
+
+**Problem:** pasted clipboard images used to be written wherever Obsidian's
+global attachment-folder setting pointed (not necessarily near the map
+file) and inserted as an Obsidian-only `![[...]]` wikilink embed, which
+renders broken in any non-Obsidian markdown previewer.
+
+**Choice / Fix:** every plugin-created attachment now goes into a
+`${mapBasename}_attachments` folder that's a sibling of the map's own
+`.md` file (created on demand, race-safe, with a same-named-file collision
+fallback to a suffixed folder name), and the node gets a standard
+CommonMark `![](relative/path)` embed instead of a wikilink — this renders
+in Obsidian AND in plain markdown previewers. New pure helpers in
+`src/sync/attachments.ts` (`attachmentFolderPath`, `buildAttachmentEmbed`,
+`dedupeAttachmentName`) do the string/dedupe logic; `MindMapView`'s
+`resolveAttachmentTarget()` does the actual vault I/O, and
+`pasteClipboardImage()` was rewired to use it.
+
+**D1 (space-free filename):** filenames are now
+`pasted-image-<timestamp>.<ext>` (no spaces), replacing the old
+`Pasted image <timestamp>.<ext>`. Rationale: `MindMapView`'s
+`resolveNodeImageUrl()` doesn't `decodeURIComponent` its embed target, so a
+`%20`-encoded space in a path could render inconsistently between
+Obsidian's own preview and the plugin's in-app thumbnail; a space-free name
+sidesteps all URL-encoding ambiguity across every renderer (in-app,
+Obsidian preview, external previewer) at once.
+
+**D2 (override Obsidian's global attachment-folder setting
+unconditionally):** no settings toggle was added; every plugin-created
+attachment always goes to the sibling `${mapName}_attachments` folder,
+regardless of the user's global Obsidian attachment-folder preference.
+Rationale: the task requires the `.md` to be portable/renderable outside
+Obsidian, which requires the image to live at a predictable path relative
+to the note — an opt-out would reintroduce the original bug for anyone who
+left it enabled. Noted as a possible future `MindMapSettings` addition if
+requested, not built now.
+
+**Known limitation:** if the map file is later renamed or moved without
+its `${mapName}_attachments` folder being moved/renamed alongside it, the
+relative embed link breaks — this isn't tracked/auto-fixed. Out of scope
+for this change.
+
+**Cost:** one-shot `createBinary`/`createFolder` I/O on the paste
+user-gesture path (not a render/layout/keystroke hot path); no new
+dependencies. Re-ran `npm run bench:images` (200 image-embed nodes, the
+image-rendering/culling path — not the paste-write path itself, but the
+closest adjacent hot path) as a sanity check:
+`parse+layout=3.9–4.1ms mount=41.2–42.7ms open=51.7–52.5ms (budget
+1000ms) [OK] pan-dispatch=3.2–3.4ms`, indistinguishable from the existing
+baseline logged above (parse+layout=3.5–4.2ms mount=40.9–43.2ms
+open=47.9–49.9ms) — no regression, as expected since nothing on this path
+touches rendering.
+
+**Regression tests:** `test/attachments.test.ts` (11 cases, the pure
+helpers). Full suite re-run for this checkpoint: 427 tests / 32 files, all
+passing. `npx tsc -noEmit -skipLibCheck` clean.
+
+## 2026-09-05 — Bugfix: clipboard copy sometimes pasted OLD content instead of NEW (Windows race)
+
+**Root cause:** two compounding defects in the copy/paste path. (a)
+`MindMapView.writeClipboardText()` set `lastWrittenClipboardText` to the
+new text *synchronously*, before `navigator.clipboard.writeText()`'s
+returned promise had resolved — so a paste that raced a still-pending OS
+write read a clipboard that hadn't landed yet, most visibly on
+Windows/Electron where that write can be slow enough to lose the race. (b)
+a failed write was silently swallowed while `lastWrittenClipboardText` still
+claimed success, poisoning `handlePaste`'s internal-vs-external comparison
+with a value the OS clipboard never actually held.
+**Fix:** `writeClipboardText()` is now async and only sets
+`lastWrittenClipboardText` to the written text once `writeText()` has
+resolved; any failure or unavailable API resets it to `null` instead of
+claiming success. The two copy/cut call sites (`onKeyDown`, context menu)
+now `await` it. `handlePaste()`'s text-paste decision was rewritten around a
+new pure function, `decidePasteSource()` (`src/sync/clipboardPaste.ts`):
+rather than value-comparing OS text against `lastWrittenClipboardText`, it
+treats the internal clipboard as authoritative unless the OS clipboard is
+positively confirmed to hold different external content — the 3-way split
+needed to tell "OS is merely stale from our own pending/failed write" apart
+from "genuine external content."
+**Cost:** none — copy/cut/paste is user-gesture-triggered keystroke/menu
+handling, not a render/layout/per-frame hot path. No new dependencies.
+**Regression tests:** `test/clipboardPaste.test.ts` — 7 cases covering the
+decision table.
+
 ## 2026-07-20 — Bugfix: tall nodes (wrapped text / image embeds) overlapping their neighbors
 
 **Root cause:** `layoutEngine.ts`'s `layoutSide` fed each node's real box
