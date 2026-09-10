@@ -104,6 +104,23 @@ above bite hardest on — start there when reasoning about a perf trade-off.
 - `npm run bench:relations` — node-relations benchmark (same-doc arrows +
   cross-doc badges) across the fixture sizes.
 
+## Deploying to a test vault
+
+- [scripts/deploy.sh](scripts/deploy.sh) (macOS) / [scripts/deploy.ps1](scripts/deploy.ps1)
+  (Windows) build the plugin and copy it into a real Obsidian vault's
+  `.obsidian/plugins/mindmap-view/` folder for manual testing, then restart
+  Obsidian against that vault. Each defaults to the "Tiyatro" vault (synced
+  via iCloud Drive) on its platform's standard iCloud path — pass a folder
+  path as the first argument/parameter to target a different vault instead;
+  omit it to use the default.
+  - macOS: `scripts/deploy.sh ["/path/to/other/vault"]`
+  - Windows: `scripts/deploy.ps1 [-VaultDir "D:\path\to\other\vault"]`
+- **Whenever a task that changed code finishes (a plan-and-build run, a
+  standalone fix, etc.), deploy the result** by running the platform's
+  deploy script (or tell the user to run it if the current environment can't
+  — e.g. this session is on a different OS than the target vault) — don't
+  just leave the build unshipped to the test vault.
+
 ## Process notes
 
 - Feature and bug work follows [plans/MASTER-PLAN.md](plans/MASTER-PLAN.md):
