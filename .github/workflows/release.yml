@@ -1,0 +1,125 @@
+name: Release
+
+on:
+  push:
+    tags:
+      - "v*"
+
+permissions:
+  contents: write
+
+jobs:
+  release:
+    runs-on: ubuntu-latest
+    timeout-minutes: 15
+    concurrency:
+      group: release-${{ github.ref_name }}
+    defaults:
+      run:
+        shell: bash
+    steps:
+      - name: Check out repository
+        uses: actions/checkout@v4
+        with:
+          fetch-depth: 0
+
+      - name: Validate tag format and derive version
+        run: |
+          TAG="$GITHUB_REF_NAME"
+          if [[ "$TAG" =~ ^v([0-9]+\.[0-9]+\.[0-9]+)$ ]]; then
+            VERSION="${BASH_REMATCH[1]}"
+          else
+            echo "::error::Tag '$TAG' does not match the required vX.Y.Z format (e.g. v0.0.1)."
+            exit 1
+          fi
+          echo "VERSION=$VERSION" >> "$GITHUB_ENV"
+          echo "Derived VERSION=$VERSION from tag $TAG"
+
+      - name: Confirm tag is on main
+        run: |
+          if ! git merge-base --is-ancestor "$GITHUB_SHA" origin/main; then
+            echo "::error::Commit $GITHUB_SHA (tag $GITHUB_REF_NAME) is not an ancestor of origin/main. Releases may only be tagged from main."
+            exit 1
+          fi
+          echo "Confirmed $GITHUB_SHA is on main."
+
+      - name: Validate manifest.json and versions.json
+        run: |
+          MANIFEST_VERSION="$(jq -r .version manifest.json)"
+          if [[ "$MANIFEST_VERSION" != "$VERSION" ]]; then
+            echo "::error::manifest.json version '$MANIFEST_VERSION' does not match tag-derived version '$VERSION'. Bump manifest.json before tagging."
+            exit 1
+          fi
+
+          HAS_VERSION="$(jq -r --arg v "$VERSION" 'has($v)' versions.json)"
+          if [[ "$HAS_VERSION" != "true" ]]; then
+            echo "::error::versions.json has no entry for version '$VERSION'. Add one before tagging."
+            exit 1
+          fi
+
+          MIN_APP_VERSION="$(jq -r .minAppVersion manifest.json)"
+          echo "MIN_APP_VERSION=$MIN_APP_VERSION" >> "$GITHUB_ENV"
+          echo "manifest.json and versions.json agree with tag-derived version $VERSION (minAppVersion $MIN_APP_VERSION)."
+
+      - name: Set up Node.js
+        uses: actions/setup-node@v4
+        with:
+          node-version: "20"
+          cache: "npm"
+
+      - name: Install dependencies
+        run: npm ci
+
+      - name: Run tests
+        run: npm test
+
+      - name: Build plugin
+        run: npm run build
+
+      - name: Assemble release zip
+        run: |
+          STAGE_DIR="release-stage/mindmap-view"
+          mkdir -p "$STAGE_DIR"
+          cp dist/main.js dist/manifest.json dist/styles.css "$STAGE_DIR/"
+
+          ZIP_NAME="mindmap-view-${GITHUB_REF_NAME}.zip"
+          (cd release-stage && zip -r "../$ZIP_NAME" mindmap-view/)
+
+          EXPECTED=$'mindmap-view/\nmindmap-view/main.js\nmindmap-view/manifest.json\nmindmap-view/styles.css'
+          ACTUAL="$(unzip -Z1 "$ZIP_NAME" | sort)"
+          EXPECTED_SORTED="$(printf '%s\n' "$EXPECTED" | sort)"
+          if [[ "$ACTUAL" != "$EXPECTED_SORTED" ]]; then
+            echo "::error::Release zip contents do not match the expected layout."
+            echo "Expected:"
+            echo "$EXPECTED_SORTED"
+            echo "Actual:"
+            echo "$ACTUAL"
+            exit 1
+          fi
+
+          echo "ZIP_NAME=$ZIP_NAME" >> "$GITHUB_ENV"
+          echo "Zip contents verified: $ZIP_NAME"
+
+      - name: Write release notes header
+        run: |
+          printf '%s\n' \
+            "Mind Map View ${VERSION}" \
+            "" \
+            "Requires Obsidian ${MIN_APP_VERSION} or later." \
+            "" \
+            "### Install" \
+            "Download \`${ZIP_NAME}\` and extract it into your vault's \`.obsidian/plugins/\` folder (or use \`scripts/install-release.sh\` / \`scripts/install-release.ps1\`), then enable \"Mind Map View\" in Obsidian's Community Plugins settings." \
+            > notes-header.md
+
+      - name: Publish GitHub release
+        env:
+          GH_TOKEN: ${{ github.token }}
+        run: |
+          gh release create "$GITHUB_REF_NAME" \
+            "$ZIP_NAME" \
+            "dist/main.js#main.js (unzipped)" \
+            "dist/manifest.json#manifest.json (unzipped)" \
+            "dist/styles.css#styles.css (unzipped)" \
+            --verify-tag \
+            --generate-notes \
+            --notes "$(cat notes-header.md)"

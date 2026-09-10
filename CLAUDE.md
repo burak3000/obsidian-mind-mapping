@@ -115,6 +115,17 @@ above bite hardest on — start there when reasoning about a perf trade-off.
   omit it to use the default.
   - macOS: `scripts/deploy.sh ["/path/to/other/vault"]`
   - Windows: `scripts/deploy.ps1 [-VaultDir "D:\path\to\other\vault"]`
+- [scripts/install-release.sh](scripts/install-release.sh) /
+  [scripts/install-release.ps1](scripts/install-release.ps1) install an
+  already-downloaded, already-extracted GitHub Release (see
+  `.github/workflows/release.yml`) into a vault instead of building from
+  source — for testing/using a *released* version rather than the current
+  working tree. Vault-path argument is required (no hardcoded default,
+  unlike deploy.sh/deploy.ps1); optional second argument for the release's
+  location (a `.zip`, its extracted folder, or the `mindmap-view/` folder
+  itself) — defaults to the current directory.
+  - macOS/Linux: `scripts/install-release.sh "/path/to/vault" [source]`
+  - Windows: `scripts/install-release.ps1 -VaultDir "D:\path\to\vault" [-Source source]`
 - **Whenever a task that changed code finishes (a plan-and-build run, a
   standalone fix, etc.), deploy the result** by running the platform's
   deploy script (or tell the user to run it if the current environment can't
@@ -140,6 +151,11 @@ above bite hardest on — start there when reasoning about a perf trade-off.
 - [SUBMISSION-CHECKLIST.md](SUBMISSION-CHECKLIST.md) tracks Obsidian
   community-plugin submission readiness (license, mobile verification)
   separately from the performance work above — check it before any
-  release-related task. No GitHub Actions workflow is used for this
-  project — releases/builds are done manually; don't (re)introduce a
-  `.github/workflows/` CI/release pipeline.
+  release-related task. The only GitHub Actions workflow in this project is
+  [.github/workflows/release.yml](.github/workflows/release.yml) — it
+  triggers on a `vX.Y.Z` tag pushed from `main`, runs `npm test` + `npm run
+  build`, validates the tag against `manifest.json`/`versions.json`, and
+  publishes a GitHub Release with the plugin zip and raw files attached
+  (see DECISIONS.md, 2026-09-10). It never commits back to the repo. Don't add
+  any other workflow (PR checks, scheduled jobs, etc.) — general CI remains
+  out of scope; this one release-on-tag exception doesn't reopen the door.

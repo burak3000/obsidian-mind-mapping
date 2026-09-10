@@ -1,5 +1,118 @@
 # Architectural Decision Records
 
+## 2026-09-10 — Tag-triggered GitHub Actions release pipeline + install-release scripts
+
+**Context:** releases were entirely manual (build locally, attach files to a
+GitHub Release by hand) — CLAUDE.md previously banned any
+`.github/workflows/` pipeline outright. The user asked for that ban to be
+narrowed: allow exactly one workflow, triggered by pushing a version tag,
+that builds/tests/publishes a release automatically, plus two new scripts to
+install an already-downloaded release into a vault (distinct from
+`deploy.sh`/`deploy.ps1`, which build from source).
+
+**Choice — workflow trigger & versioning:** `.github/workflows/release.yml`
+triggers only on `v*` tag pushes (the user's own stated convention: `v0.0.1`,
+`v0.0.2`, ...). The job validates, in order (cheapest first, before any
+`npm ci`/test/build spend): (1) the tag matches `^v[0-9]+\.[0-9]+\.[0-9]+$`
+exactly — fails loudly otherwise, naming the bad tag and the expected shape;
+(2) the tagged commit is an ancestor of `origin/main` (`git merge-base
+--is-ancestor`) — fails loudly otherwise, since the user's own request was
+specifically "a release when a tag **from main** is created"; (3)
+`manifest.json`'s committed `version` equals the tag with its `v` stripped;
+(4) `versions.json` has an entry keyed by that same version. (3) and (4) both
+fail loudly on mismatch rather than trusting the tag — catches the single
+most likely operator mistake (pushing a tag before bumping
+`manifest.json`/`versions.json`), and means the workflow **never commits
+back to the repo** — bumping those two files and committing to `main` stays
+a manual pre-tagging step, avoiding the complexity/risk of CI writing to the
+repository.
+
+**Choice — `v` prefix vs. Obsidian's community-plugin convention:**
+Obsidian's community-plugin updater expects a release's tag to equal
+`manifest.json`'s bare version with no `v` (e.g. `1.0.0`). The user's own
+tags keep the `v` prefix for their own manual-install workflow. The
+version-derivation logic strips a leading `v` if present (no-op if absent),
+so the *same* workflow would also work unmodified against a future bare
+`X.Y.Z` tag — but the *trigger* only matches `v*` today, matching the user's
+stated convention and avoiding speculative scope. If/when this repo submits
+to the community-plugin store, that specific release needs its own
+unprefixed tag (or the trigger list gets a one-line addition then) — not
+solved now, tracked here and in SUBMISSION-CHECKLIST.md.
+
+**Choice — release contents:** the zip (`mindmap-view-vX.Y.Z.zip`) contains
+exactly a top-level `mindmap-view/` folder with `main.js`, `manifest.json`,
+`styles.css` — nothing else — so extracting it next to `.obsidian/plugins/`
+(or feeding it straight to the new install scripts) drops in cleanly. The
+same three files are **also** attached individually (unzipped) to the same
+release — beyond the user's literal ask for "a zip file," but a small,
+low-risk addition that directly resolves the contradiction in
+SUBMISSION-CHECKLIST.md's pre-existing "main.js, manifest.json, and
+styles.css... attached to a GitHub Release by hand" line, and partially
+future-proofs for a community-plugin submission (which expects those three
+files as separate assets, not zipped).
+
+**Choice — release creation is a single `gh release create` call**
+(`--verify-tag` so it errors instead of silently creating a tag if the
+pushed tag is somehow missing; `--generate-notes` plus a short `--notes`
+header naming the version, `minAppVersion`, and how to install). No manual
+draft-then-publish orchestration: `gh release create`'s own documented
+behavior already creates the release as a draft internally, uploads all
+given assets, and only then publishes — so a failure partway through (e.g. a
+network blip on one asset) leaves an unpublished draft, not a broken public
+release. Re-running after a failure (or after deleting/re-pushing the same
+tag) hits `gh`'s own "release already exists" error if a release for that
+tag is already published — the fix is to delete the stray release on GitHub
+first, not something this pipeline auto-resolves.
+
+**Choice — `install-release.sh`/`install-release.ps1`** (new, alongside the
+existing `deploy.sh`/`deploy.ps1` which build from source): take the target
+vault as a **required** argument (no hardcoded default vault, unlike
+`deploy.sh`/`.ps1` — those default to the maintainer's own dev vault, which
+would be the wrong default for a script meant to install an arbitrary
+downloaded release anywhere) and an **optional** second argument for the
+release's location, defaulting to the current directory. That location may
+be a `.zip` (auto-extracted; the script errors clearly if `unzip` isn't on
+`PATH`), the extracted folder itself, or a parent folder containing a
+`mindmap-view/` subfolder — different unzip tools (Finder, Explorer,
+`unzip`, `Expand-Archive`) disagree on whether they add an extra wrapper
+folder around the zip's own top-level `mindmap-view/`, so the script checks
+both shapes rather than assuming one. Installing over an existing plugin
+folder prints the old → new version transition and always overwrites (no
+confirmation prompt) — matching the user's own description ("download that
+folder archive and override contents"). Mirrors `deploy.sh`/`.ps1`'s
+quit-Obsidian → copy → reopen-with-vault behavior for consistency.
+
+**Fixed in passing:** `deploy.sh` hardcoded `REPO_DIR` to the maintainer's
+absolute machine path instead of deriving it from the script's own location,
+unlike `deploy.ps1` (which already used `$PSScriptRoot`). Now
+`REPO_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")/.." && pwd)"` — portable
+across machines/checkout locations, matching `deploy.ps1`.
+
+**Cost:** no new runtime dependency (nothing touches the plugin bundle);
+`jq`/`zip`/`unzip` are standard-image tools on GitHub's `ubuntu-latest`
+runner, not project dependencies. CI minutes only spent on a tag push, never
+per-commit/per-PR. Local dry-run (this session): tag-regex validation,
+`jq`-based manifest/versions.json checks, zip-assembly + exact-contents
+verification, and `git merge-base --is-ancestor` syntax were all exercised
+against this repo's real files under actual `bash` (not the default
+interactive shell in every environment, which can silently disagree — e.g.
+`BASH_REMATCH` came back empty under zsh's `[[ =~ ]]` even though the
+pattern matched, a real gotcha this session hit while testing). A
+release-notes-generation heredoc that would have embedded YAML's own
+indentation into the release notes (risking an accidental Markdown
+code-block on the GitHub release page) was caught and replaced with a
+single `printf`. `install-release.sh` was run end-to-end (bash, stubbed
+`open`/`osascript`/`pgrep`/`pkill`) through 9 scenarios: no args, `-h`,
+missing vault, fresh install (both nested and flat source layouts), install
+from a `.zip`, upgrade-over-existing (version-transition message),
+incomplete release (missing file), and a vault missing `.obsidian` (warns,
+continues) — all passed. `install-release.ps1` could not be executed in
+this environment (no `pwsh` installed) — verified only by a careful
+line-by-line parity check against the tested bash script; report this gap
+rather than claiming automated verification, consistent with this project's
+existing "Electron app, no browser dev-server" verification-limitation
+convention. No tag was pushed and no GitHub release was created.
+
 ## 2026-09-10 — Fixes from code review of the attachments/clipboard PR (#2)
 
 **Context:** a pre-merge review of the 2026-09-05 attachments-folder and

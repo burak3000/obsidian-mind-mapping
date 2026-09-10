@@ -9,7 +9,7 @@
 #   VAULT_DIR   Optional. Overrides the default target vault folder.
 set -euo pipefail
 
-REPO_DIR="/Users/burakucbinli/projects/obsidian-mind-mapping"
+REPO_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")/.." && pwd)"
 PLUGIN_ID="mindmap-view"
 VAULT_DIR="${1:-/Users/burakucbinli/Library/Mobile Documents/iCloud~md~obsidian/Documents/Tiyatro}"
 PLUGIN_DIR="$VAULT_DIR/.obsidian/plugins/$PLUGIN_ID"

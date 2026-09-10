@@ -18,7 +18,17 @@ Tracks readiness against [Obsidian's plugin guidelines](https://docs.obsidian.md
 ## Needs your action before submitting
 
 - [ ] **License.** No `LICENSE` file exists yet — community plugins require one. This is a real choice (MIT, GPL, etc.) with implications for how others can use/fork the code; I didn't pick one for you. Add one and reference it from `manifest.json` if you want (not required, but common).
-- [ ] **GitHub repository + first tagged release.** No CI/release workflow is used for this project (intentionally — see CLAUDE.md); `main.js`, `manifest.json`, and `styles.css` need to be built locally (`npm run build`) and attached to a GitHub Release by hand, with the release tag (e.g. `1.0.0`) matching `manifest.json`'s `version`.
+- [ ] **GitHub repository + first tagged release.** Building and attaching
+  release assets is now automated: pushing a `vX.Y.Z` tag from `main`
+  triggers `.github/workflows/release.yml`, which runs tests, builds, and
+  publishes a GitHub Release with `main.js`/`manifest.json`/`styles.css`
+  (individually and as `mindmap-view-vX.Y.Z.zip`) attached — see CLAUDE.md
+  and DECISIONS.md (2026-09-10). Still needs your action before an official
+  Obsidian community-plugin submission specifically: Obsidian's updater
+  matches a release by tag name == `manifest.json`'s bare version with
+  **no** `v` prefix (e.g. `1.0.0`), but this project's tags keep the `v`
+  prefix (`v1.0.0`) for your own manual-install workflow — you'll need a
+  one-off unprefixed tag/release at submission time.
 - [ ] **`authorUrl`/`fundingUrl`** (optional fields) — add if you want a link back to you or a sponsorship page.
 - [ ] **Mobile verification.** `isDesktopOnly` is currently `false`, meaning the plugin claims mobile support, but nothing in this session verified it on an actual phone/tablet (no way to do that from here — see CLAUDE.md's note on this being an Electron desktop app with no browser dev-server, and mobile being a real device besides). Specifically untested: touch drag for manual positioning/reordering (built on Pointer Events, which *should* work, but pinch-to-zoom isn't implemented — only mouse-wheel zoom is). Either verify on a device, or set `isDesktopOnly: true` until you do.
 - [ ] **Obsidian's official plugin review** happens after you submit a PR to the `obsidian-releases` repo — expect requests for changes; this checklist covers the mechanical/automatable parts, not their manual review judgment calls.
