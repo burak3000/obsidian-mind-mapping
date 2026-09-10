@@ -1,5 +1,5 @@
 import { describe, expect, it } from "vitest";
-import { attachmentFolderPath, buildAttachmentEmbed, dedupeAttachmentName } from "../src/sync/attachments";
+import { attachmentFolderPath, buildAttachmentEmbed, dedupeAttachmentName, sanitizedAttachmentFolderName } from "../src/sync/attachments";
 
 describe("attachmentFolderPath", () => {
 	it("root-level map (mapParentPath === \"\") returns just the attachments folder name", () => {
@@ -14,10 +14,26 @@ describe("attachmentFolderPath", () => {
 		expect(attachmentFolderPath("notes/maps/", "MyMap")).toBe("notes/maps/MyMap_attachments");
 	});
 
-	it("derives the folder name from basename + literal _attachments suffix", () => {
+	it("sanitizes spaces out of the basename before appending _attachments (D1 extended to folder names — see DECISIONS.md)", () => {
 		const path = attachmentFolderPath("", "Project Plan");
-		expect(path).toBe("Project Plan_attachments");
+		expect(path).toBe("Project-Plan_attachments");
 		expect(path.endsWith("_attachments")).toBe(true);
+	});
+
+	it("never leaves a space or other CommonMark-destination-unsafe character in the result, whatever the map is named", () => {
+		expect(attachmentFolderPath("", "Notes (Draft)")).toBe("Notes-Draft_attachments");
+		expect(attachmentFolderPath("", "Q&A / Ideas")).toMatch(/^[A-Za-z0-9._-]+_attachments$/);
+	});
+});
+
+describe("sanitizedAttachmentFolderName", () => {
+	it("passes a space-free basename through unchanged", () => {
+		expect(sanitizedAttachmentFolderName("MyMap")).toBe("MyMap_attachments");
+	});
+
+	it("collapses a run of unsafe characters to a single hyphen and trims stray edges", () => {
+		expect(sanitizedAttachmentFolderName("Project Plan")).toBe("Project-Plan_attachments");
+		expect(sanitizedAttachmentFolderName(" Draft ")).toBe("Draft_attachments");
 	});
 });
 
@@ -30,6 +46,19 @@ describe("buildAttachmentEmbed", () => {
 		const embed = buildAttachmentEmbed("MyMap_attachments", "pasted-image-20260101120000.png");
 		expect(embed).not.toContain(" ");
 		expect(embed).not.toContain("%20");
+	});
+
+	it("regression: a space-containing map name no longer produces an embed with an unescaped space in the destination", () => {
+		// Previously `attachmentFolderPath` preserved the raw basename, so this
+		// combination produced `![](Project Plan_attachments/....png)` — an
+		// unbracketed CommonMark destination containing a literal space, which
+		// strict/external markdown renderers refuse to parse as a link. That
+		// was exactly the "broken outside Obsidian" bug this feature exists to
+		// fix, just relocated from the pasted-image filename to the folder name.
+		const folderName = attachmentFolderPath("", "Project Plan");
+		const embed = buildAttachmentEmbed(folderName, "pasted-image-20260101120000.png");
+		expect(embed).toBe("![](Project-Plan_attachments/pasted-image-20260101120000.png)");
+		expect(embed).not.toMatch(/\s/);
 	});
 });
 

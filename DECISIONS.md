@@ -1,5 +1,77 @@
 # Architectural Decision Records
 
+## 2026-09-10 — Fixes from code review of the attachments/clipboard PR (#2)
+
+**Context:** a pre-merge review of the 2026-09-05 attachments-folder and
+clipboard-race work (below) surfaced 10 findings. This entry covers what
+was fixed on the same branch before merging, and what was deliberately left
+as-is.
+
+**Fixed — confirmed bug (embed encoding):** `buildAttachmentEmbed` spliced
+the attachment folder name into a raw CommonMark `![](...)` destination
+with no escaping. D1 (below) made the pasted-image *filename* space-free
+for exactly this reason, but the *folder* name — derived straight from the
+map's own basename — was never sanitized, so a map named e.g. "Project
+Plan.md" produced `![](Project Plan_attachments/....png)`: an unbracketed
+destination containing a literal space, which strict/external CommonMark
+renderers refuse to parse as a link. That's the exact "broken outside
+Obsidian" bug this feature exists to fix, just relocated from filename to
+folder name — invisible in Obsidian itself (both this plugin's own mdlink
+regex and Obsidian's link resolution tolerate spaces) so it wasn't caught
+by manual dev-vault testing. **Fix:** new `sanitizeForLinkPath`/
+`sanitizedAttachmentFolderName` helpers in `src/sync/attachments.ts`
+replace whitespace and any other CommonMark-destination-unsafe character
+in the basename with a hyphen before `_attachments` is appended — extending
+D1's space-free rationale from the filename to the folder name. The real
+folder still lives next to the map either way; only its name changes for a
+map whose name isn't already link-safe. Regression-tested in
+`test/attachments.test.ts`.
+
+**Fixed — plausible races/error-masking, all in `resolveAttachmentTarget`/
+`pasteClipboardImage` (`src/view/MindMapView.ts`):**
+- *Filename-dedupe TOCTOU:* the folder-listing snapshot used to dedupe a
+  new filename was read well before the actual `createBinary` write, so two
+  images pasted in quick succession could compute the same "free" name and
+  the second `createBinary` would throw, silently dropping that paste.
+  `pasteClipboardImage` now retries up to 3 times, re-resolving the target
+  (fresh dedupe) on each collision.
+- *Error-masking in folder creation:* `ensureAttachmentFolder`'s catch
+  swallowed every `createFolder` failure as an assumed same-named-file
+  collision, so a genuine error (permission denied, invalid path) burned
+  20 useless suffix-retry attempts before failing with a generic message.
+  `resolveAttachmentTarget` now checks what's actually at the blocked path
+  afterward and only retries with suffixes when a real file is blocking it;
+  otherwise it fails immediately with a clearer notice.
+- *Duplicated path-join logic:* the suffix-retry loop and the final
+  `vaultPath` hand-rolled their own `/`-joins instead of reusing the
+  already-tested `joinVaultPath` helper `attachmentFolderPath` is built on
+  (independently flagged by four separate review angles) — now exported
+  and reused throughout `resolveAttachmentTarget`.
+- *Overlapping clipboard writes:* `writeClipboardText` had no guard against
+  two overlapping calls (a fast second Ctrl/Cmd+C before the first write
+  settles) — an out-of-order promise resolution could let a stale write's
+  completion clobber a newer, already-confirmed `lastWrittenClipboardText`.
+  A `clipboardWriteSeq` counter now lets each call recognize when a later
+  call has superseded it and skip applying its own (stale) outcome.
+
+**Deliberately left as-is:** `decidePasteSource`'s fallback case (when the
+last OS-clipboard write is unconfirmed/failed) trusts the internal
+clipboard unconditionally, without inspecting `osText` — so if the
+plugin's own clipboard write ever fails *and* the user then makes a
+genuine external copy before pasting, that external content is silently
+dropped in favor of the stale internal one. This is the documented, tested
+design (see the 2026-09-05 entry below and `test/clipboardPaste.test.ts`),
+not an oversight: distinguishing "OS clipboard merely reflects our own
+unconfirmed/failed write" from "OS clipboard genuinely changed" isn't
+possible from clipboard text value alone, and narrowing the trigger further
+would need a redesign (e.g. a written sentinel/signature) disproportionate
+to how rarely the OS clipboard API actually fails. Noted as a known,
+narrow limitation rather than fixed.
+
+**Verification:** 431/431 unit tests (4 new, covering the encoding fix),
+`tsc --noEmit` clean, production build clean, `bench:images` unaffected
+(open ≈50ms vs. 1000ms budget, consistent with the 2026-09-05 run).
+
 ## 2026-09-05 — Feature/fix: pasted-image attachments moved to a `{mapName}_attachments` sibling folder; wikilink embed → standard markdown embed
 
 **Problem:** pasted clipboard images used to be written wherever Obsidian's

@@ -37,7 +37,7 @@ import { LayoutConfig } from "../layout/layoutEngine";
 import { resolveGoToTarget } from "../sync/goToSection";
 import { parseExternalPaste } from "../sync/parseExternalPaste";
 import { decidePasteSource } from "../sync/clipboardPaste";
-import { attachmentFolderPath, buildAttachmentEmbed, dedupeAttachmentName } from "../sync/attachments";
+import { buildAttachmentEmbed, dedupeAttachmentName, joinVaultPath, sanitizedAttachmentFolderName } from "../sync/attachments";
 
 export const VIEW_TYPE_MINDMAP = "mindmap-view";
 
@@ -106,6 +106,8 @@ export class MindMapView extends TextFileView implements ControllerListener {
 	private lastWrittenText = "";
 	/** The last markdown text *we* wrote to the OS clipboard (tree copy, plan item 06) — paste compares against this to tell "internal copy/cut" apart from "user copied something else outside the plugin". */
 	private lastWrittenClipboardText: string | null = null;
+	/** Incremented at the start of every `writeClipboardText()` call — lets a call recognize when a *later* call has started before its own `writeText` settles, so it can skip updating `lastWrittenClipboardText` instead of clobbering that later call's (possibly already-confirmed) result with its own now-stale one. */
+	private clipboardWriteSeq = 0;
 	private readonly scheduleWrite: ReturnType<typeof debounce>;
 
 	constructor(leaf: WorkspaceLeaf, private readonly settingsProvider: SettingsProvider) {
@@ -814,25 +816,34 @@ export class MindMapView extends TextFileView implements ControllerListener {
 	 * synchronously before awaiting (the old behavior) is exactly the bug
 	 * this fixes — `handlePaste` could then compare against a value that
 	 * didn't yet (or never would) reflect the real OS clipboard.
+	 *
+	 * Two overlapping calls (a rapid second Ctrl/Cmd+C or +X before the first
+	 * write has settled) are also guarded against: `clipboardWriteSeq` is
+	 * bumped synchronously at the start of every call, and a call only
+	 * applies its outcome if its own sequence number is still the latest one
+	 * issued — otherwise a slow first write settling *after* a fast second
+	 * one would clobber the second (possibly already-confirmed) result with
+	 * its own now-stale one.
 	 */
 	private async writeClipboardText(): Promise<void> {
 		if (!this.controller) return;
 		const text = this.controller.getClipboardMarkdown();
 		if (text === null) return;
+		const mySeq = ++this.clipboardWriteSeq;
 		if (!navigator.clipboard?.writeText) {
 			// API unavailable on this platform — internal clipboard still works
 			// for paste-within-the-plugin, but we must not claim the OS
 			// clipboard holds text that it doesn't.
-			this.lastWrittenClipboardText = null;
+			if (mySeq === this.clipboardWriteSeq) this.lastWrittenClipboardText = null;
 			return;
 		}
 		try {
 			await navigator.clipboard.writeText(text);
-			this.lastWrittenClipboardText = text;
+			if (mySeq === this.clipboardWriteSeq) this.lastWrittenClipboardText = text;
 		} catch {
 			// permission denied, or the write otherwise failed — same
 			// must-not-claim-success reasoning as the unavailable-API case above.
-			this.lastWrittenClipboardText = null;
+			if (mySeq === this.clipboardWriteSeq) this.lastWrittenClipboardText = null;
 		}
 	}
 
@@ -903,6 +914,14 @@ export class MindMapView extends TextFileView implements ControllerListener {
 	 * that case), or the read/write fails (permission denied, no active
 	 * file, unsupported browser API — same defensive style as
 	 * `writeClipboardText`/`handlePaste`'s own text read).
+	 *
+	 * `resolveAttachmentTarget`'s filename dedupe is a point-in-time
+	 * directory-listing snapshot, so two images pasted in quick succession
+	 * can compute the same "free" filename before either actually exists on
+	 * disk — `createBinary` then throws for whichever one loses that race.
+	 * Rather than lose that paste, retry up to 3 times: each retry
+	 * re-resolves the target against a freshly re-listed folder, which now
+	 * includes the file the other paste just wrote.
 	 */
 	private async pasteClipboardImage(): Promise<string | null> {
 		if (!this.file || typeof navigator.clipboard?.read !== "function") return null;
@@ -921,10 +940,20 @@ export class MindMapView extends TextFileView implements ControllerListener {
 				const ext = MindMapView.IMAGE_EXT_FOR_MIME[subtype] ?? subtype;
 				const stamp = window.moment ? window.moment().format("YYYYMMDDHHmmss") : String(Date.now());
 				const filename = `pasted-image-${stamp}.${ext}`;
-				const target = await this.resolveAttachmentTarget(filename);
-				if (!target) return null;
-				await this.app.vault.createBinary(target.vaultPath, await blob.arrayBuffer());
-				return target.embedText;
+				const bytes = await blob.arrayBuffer();
+				for (let attempt = 0; attempt < 3; attempt++) {
+					const target = await this.resolveAttachmentTarget(filename);
+					if (!target) return null;
+					try {
+						await this.app.vault.createBinary(target.vaultPath, bytes);
+						return target.embedText;
+					} catch (err) {
+						if (attempt === 2) throw err;
+						// Likely a same-instant dedupe collision with a concurrent
+						// paste — loop and re-resolve against the updated folder.
+					}
+				}
+				return null;
 			} catch {
 				new Notice("Mind map: couldn't paste the clipboard image.");
 				return null;
@@ -963,35 +992,46 @@ export class MindMapView extends TextFileView implements ControllerListener {
 	 *     collision fallback below kicked in.
 	 *
 	 * Folder resolution, in order:
-	 * 1. Compute the sibling folder's full vault path via
-	 *    `attachmentFolderPath` and create it if missing (tolerating a
-	 *    "already exists" error from a concurrent create — same race-safety
-	 *    pattern as elsewhere in this file).
-	 * 2. If that path is occupied by a same-named FILE (or creation
-	 *    otherwise still didn't yield a real folder), retry with
-	 *    `${bareName}-1`, `${bareName}-2`, … up to 20 attempts, using
-	 *    whichever suffixed name first resolves to a real folder.
+	 * 1. Compute the sibling folder's full vault path (sanitized bare name
+	 *    via `sanitizedAttachmentFolderName`, joined with the map's parent
+	 *    path via `joinVaultPath` — the same helper used for every path join
+	 *    below, so there's exactly one place slash-joining can go wrong) and
+	 *    create it if missing (tolerating a "already exists" error from a
+	 *    concurrent create — same race-safety pattern as elsewhere in this
+	 *    file).
+	 * 2. If, after that, the path still isn't a real folder, check what's
+	 *    actually there: a same-named FILE means a genuine, expected
+	 *    collision — retry with `${bareName}-1`, `${bareName}-2`, … up to 20
+	 *    attempts, using whichever suffixed name first resolves to a real
+	 *    folder. Nothing at all there means folder creation itself failed
+	 *    for some other reason (permission denied, invalid path, I/O error)
+	 *    — retrying with a different name won't fix that, so this fails
+	 *    immediately instead of burning 20 identical failed attempts and
+	 *    misreporting a real error as a naming collision.
 	 */
 	private async resolveAttachmentTarget(filename: string): Promise<{ vaultPath: string; embedText: string } | null> {
 		if (!this.file) return null;
 
 		const parentPath = this.file.parent?.path ?? "";
-		const bareFolderName = `${this.file.basename}_attachments`;
+		const bareFolderName = sanitizedAttachmentFolderName(this.file.basename);
 
 		let usedBareFolderName = bareFolderName;
-		let usedFullFolderPath = attachmentFolderPath(parentPath, this.file.basename);
+		let usedFullFolderPath = joinVaultPath(parentPath, bareFolderName);
 		let folder = await this.ensureAttachmentFolder(usedFullFolderPath);
 
 		if (!folder) {
-			// A same-named FILE occupies the folder's path (or creation
-			// otherwise failed) — fall back to a suffixed folder name.
-			for (let n = 1; n <= 20 && !folder; n++) {
-				usedBareFolderName = `${bareFolderName}-${n}`;
-				usedFullFolderPath = parentPath ? `${parentPath}/${usedBareFolderName}` : usedBareFolderName;
-				folder = await this.ensureAttachmentFolder(usedFullFolderPath);
+			const blocker = this.app.vault.getAbstractFileByPath(usedFullFolderPath);
+			if (blocker && !(blocker instanceof TFolder)) {
+				// A same-named FILE occupies the folder's path — fall back to a
+				// suffixed folder name.
+				for (let n = 1; n <= 20 && !folder; n++) {
+					usedBareFolderName = `${bareFolderName}-${n}`;
+					usedFullFolderPath = joinVaultPath(parentPath, usedBareFolderName);
+					folder = await this.ensureAttachmentFolder(usedFullFolderPath);
+				}
 			}
 			if (!folder) {
-				new Notice("Mind map: couldn't paste the clipboard image.");
+				new Notice("Mind map: couldn't create the attachments folder.");
 				return null;
 			}
 		}
@@ -1003,7 +1043,7 @@ export class MindMapView extends TextFileView implements ControllerListener {
 		const finalFilename = dedupeAttachmentName(existingNames, base, ext);
 
 		return {
-			vaultPath: `${usedFullFolderPath}/${finalFilename}`,
+			vaultPath: joinVaultPath(usedFullFolderPath, finalFilename),
 			embedText: buildAttachmentEmbed(usedBareFolderName, finalFilename),
 		};
 	}
