@@ -117,13 +117,16 @@ above bite hardest on — start there when reasoning about a perf trade-off.
   - Windows: `scripts/deploy.ps1 [-VaultDir "D:\path\to\other\vault"]`
 - [scripts/install-release.sh](scripts/install-release.sh) /
   [scripts/install-release.ps1](scripts/install-release.ps1) install an
-  already-downloaded, already-extracted GitHub Release (see
-  `.github/workflows/release.yml`) into a vault instead of building from
-  source — for testing/using a *released* version rather than the current
-  working tree. Vault-path argument is required (no hardcoded default,
-  unlike deploy.sh/deploy.ps1); optional second argument for the release's
-  location (a `.zip`, its extracted folder, or the `mindmap-view/` folder
-  itself) — defaults to the current directory.
+  already-downloaded GitHub Release (see `.github/workflows/release.yml`)
+  into a vault instead of building from source — for testing/using a
+  *released* version rather than the current working tree. Vault-path
+  argument is required (no hardcoded default, unlike deploy.sh/deploy.ps1);
+  optional second argument for the release's location — a `.zip`
+  (auto-extracted), its extracted folder, or the `mindmap-view/` folder
+  itself — defaults to the current directory. `install-release.sh` runs on
+  macOS and Linux; auto-reopening Obsidian after install is macOS-only
+  (Linux still installs the files, then tells you to open the vault
+  yourself).
   - macOS/Linux: `scripts/install-release.sh "/path/to/vault" [source]`
   - Windows: `scripts/install-release.ps1 -VaultDir "D:\path\to\vault" [-Source source]`
 - **Whenever a task that changed code finishes (a plan-and-build run, a

@@ -84,7 +84,12 @@ fi
 PLUGIN_DIR="$VAULT_DIR/.obsidian/plugins/$PLUGIN_ID"
 
 # --- Resolve SOURCE: .zip / nested folder / flat folder ---------------------
-if [[ "$SOURCE" == *.zip ]]; then
+# Case-insensitive match (a ".ZIP" from a case-preserving filesystem or a
+# browser download should still be recognized) — matches install-release.ps1's
+# case-insensitive check. `tr` rather than bash 4+'s "${VAR,,}" for
+# portability: macOS ships bash 3.2 by default, which doesn't support it.
+SOURCE_LOWER="$(printf '%s' "$SOURCE" | tr '[:upper:]' '[:lower:]')"
+if [[ "$SOURCE_LOWER" == *.zip ]]; then
 	if [[ ! -f "$SOURCE" ]]; then
 		echo "Error: zip file not found: $SOURCE" >&2
 		exit 1
@@ -145,8 +150,13 @@ else
 fi
 
 # --- Closing Obsidian (if running) ------------------------------------------
+# `osascript`/`open -a` are macOS-only; `pgrep`/`pkill` work on Linux too, so
+# only the two macOS-specific calls are gated — a Linux run still closes a
+# running Obsidian and still installs the files, it just can't auto-reopen.
 echo "==> Closing Obsidian (if running)"
-osascript -e 'tell application "Obsidian" to if it is running then quit' >/dev/null 2>&1 || true
+if [[ "$(uname)" == "Darwin" ]]; then
+	osascript -e 'tell application "Obsidian" to if it is running then quit' >/dev/null 2>&1 || true
+fi
 for _ in $(seq 1 20); do
 	pgrep -x Obsidian >/dev/null 2>&1 || break
 	sleep 0.5
@@ -158,7 +168,11 @@ echo "==> Copying plugin files to $PLUGIN_DIR"
 mkdir -p "$PLUGIN_DIR"
 cp "$RELEASE_DIR/main.js" "$RELEASE_DIR/manifest.json" "$RELEASE_DIR/styles.css" "$PLUGIN_DIR/"
 
-echo "==> Opening Obsidian with vault: $VAULT_DIR"
-open -a Obsidian "$VAULT_DIR"
+if [[ "$(uname)" == "Darwin" ]]; then
+	echo "==> Opening Obsidian with vault: $VAULT_DIR"
+	open -a Obsidian "$VAULT_DIR"
+else
+	echo "==> Files installed. Open Obsidian and load the vault manually (auto-reopen is macOS-only)."
+fi
 
 echo "==> Done"

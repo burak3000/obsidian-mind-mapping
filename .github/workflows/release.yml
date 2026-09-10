@@ -18,11 +18,6 @@ jobs:
       run:
         shell: bash
     steps:
-      - name: Check out repository
-        uses: actions/checkout@v4
-        with:
-          fetch-depth: 0
-
       - name: Validate tag format and derive version
         run: |
           TAG="$GITHUB_REF_NAME"
@@ -35,6 +30,11 @@ jobs:
           echo "VERSION=$VERSION" >> "$GITHUB_ENV"
           echo "Derived VERSION=$VERSION from tag $TAG"
 
+      - name: Check out repository
+        uses: actions/checkout@v4
+        with:
+          fetch-depth: 0
+
       - name: Confirm tag is on main
         run: |
           if ! git merge-base --is-ancestor "$GITHUB_SHA" origin/main; then
@@ -45,19 +45,31 @@ jobs:
 
       - name: Validate manifest.json and versions.json
         run: |
+          PLUGIN_ID="$(jq -r .id manifest.json)"
+          echo "PLUGIN_ID=$PLUGIN_ID" >> "$GITHUB_ENV"
+
           MANIFEST_VERSION="$(jq -r .version manifest.json)"
           if [[ "$MANIFEST_VERSION" != "$VERSION" ]]; then
             echo "::error::manifest.json version '$MANIFEST_VERSION' does not match tag-derived version '$VERSION'. Bump manifest.json before tagging."
             exit 1
           fi
 
-          HAS_VERSION="$(jq -r --arg v "$VERSION" 'has($v)' versions.json)"
-          if [[ "$HAS_VERSION" != "true" ]]; then
-            echo "::error::versions.json has no entry for version '$VERSION'. Add one before tagging."
+          MIN_APP_VERSION="$(jq -r '.minAppVersion // empty' manifest.json)"
+          if [[ -z "$MIN_APP_VERSION" ]]; then
+            echo "::error::manifest.json has no minAppVersion set."
             exit 1
           fi
 
-          MIN_APP_VERSION="$(jq -r .minAppVersion manifest.json)"
+          VERSIONS_MIN_APP="$(jq -r --arg v "$VERSION" '.[$v] // empty' versions.json)"
+          if [[ -z "$VERSIONS_MIN_APP" ]]; then
+            echo "::error::versions.json has no entry for version '$VERSION'. Add one before tagging."
+            exit 1
+          fi
+          if [[ "$VERSIONS_MIN_APP" != "$MIN_APP_VERSION" ]]; then
+            echo "::error::versions.json's minAppVersion for '$VERSION' ('$VERSIONS_MIN_APP') does not match manifest.json's minAppVersion ('$MIN_APP_VERSION')."
+            exit 1
+          fi
+
           echo "MIN_APP_VERSION=$MIN_APP_VERSION" >> "$GITHUB_ENV"
           echo "manifest.json and versions.json agree with tag-derived version $VERSION (minAppVersion $MIN_APP_VERSION)."
 
@@ -78,14 +90,14 @@ jobs:
 
       - name: Assemble release zip
         run: |
-          STAGE_DIR="release-stage/mindmap-view"
+          STAGE_DIR="release-stage/${PLUGIN_ID}"
           mkdir -p "$STAGE_DIR"
           cp dist/main.js dist/manifest.json dist/styles.css "$STAGE_DIR/"
 
-          ZIP_NAME="mindmap-view-${GITHUB_REF_NAME}.zip"
-          (cd release-stage && zip -r "../$ZIP_NAME" mindmap-view/)
+          ZIP_NAME="${PLUGIN_ID}-${GITHUB_REF_NAME}.zip"
+          (cd release-stage && zip -r "../$ZIP_NAME" "${PLUGIN_ID}/")
 
-          EXPECTED=$'mindmap-view/\nmindmap-view/main.js\nmindmap-view/manifest.json\nmindmap-view/styles.css'
+          EXPECTED=$(printf '%s/\n%s/main.js\n%s/manifest.json\n%s/styles.css' "$PLUGIN_ID" "$PLUGIN_ID" "$PLUGIN_ID" "$PLUGIN_ID")
           ACTUAL="$(unzip -Z1 "$ZIP_NAME" | sort)"
           EXPECTED_SORTED="$(printf '%s\n' "$EXPECTED" | sort)"
           if [[ "$ACTUAL" != "$EXPECTED_SORTED" ]]; then
@@ -100,7 +112,9 @@ jobs:
           echo "ZIP_NAME=$ZIP_NAME" >> "$GITHUB_ENV"
           echo "Zip contents verified: $ZIP_NAME"
 
-      - name: Write release notes header
+      - name: Publish GitHub release
+        env:
+          GH_TOKEN: ${{ github.token }}
         run: |
           printf '%s\n' \
             "Mind Map View ${VERSION}" \
@@ -111,10 +125,6 @@ jobs:
             "Download \`${ZIP_NAME}\` and extract it into your vault's \`.obsidian/plugins/\` folder (or use \`scripts/install-release.sh\` / \`scripts/install-release.ps1\`), then enable \"Mind Map View\" in Obsidian's Community Plugins settings." \
             > notes-header.md
 
-      - name: Publish GitHub release
-        env:
-          GH_TOKEN: ${{ github.token }}
-        run: |
           gh release create "$GITHUB_REF_NAME" \
             "$ZIP_NAME" \
             "dist/main.js#main.js (unzipped)" \
@@ -122,4 +132,4 @@ jobs:
             "dist/styles.css#styles.css (unzipped)" \
             --verify-tag \
             --generate-notes \
-            --notes "$(cat notes-header.md)"
+            --notes-file notes-header.md

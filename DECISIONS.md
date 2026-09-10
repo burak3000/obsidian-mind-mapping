@@ -1,5 +1,99 @@
 # Architectural Decision Records
 
+## 2026-09-10 — Fixes from code review of the release-pipeline PR (#3)
+
+**Context:** a pre-merge review of the release-pipeline work (below) surfaced
+10 findings. This entry covers what was fixed before merging and what was
+deliberately left as-is.
+
+**Fixed — confirmed correctness bugs:**
+- `scripts/install-release.sh` was documented as running on "macOS/Linux,"
+  but its final step called the macOS-only `open -a Obsidian` with no
+  guard — on Linux the install would actually succeed, then the script would
+  abort (exit 127, unguarded, under `set -e`) before finishing. Now the
+  macOS-only `osascript`/`open -a` calls are gated behind a `uname` check;
+  `pgrep`/`pkill` (already cross-platform) still run unconditionally. Linux
+  installs the files and prints a note to open the vault manually instead
+  of crashing.
+- `scripts/deploy.sh`'s self-locating `REPO_DIR` (added in the previous PR)
+  broke under two invocation patterns, both empirically reproduced: run
+  through a symlink (resolves to the symlink's own directory, not the
+  repo), and `source`d under zsh — the user's own default shell — which
+  bypasses the `#!/usr/bin/env bash` shebang entirely and silently resolves
+  `REPO_DIR` to `/`. Fixed by resolving symlinks properly (a standard
+  bash follow-the-`-L`-chain loop) and adding a `$ZSH_VERSION` guard that
+  refuses to proceed (using `return`, not `exit`, so it can't kill the
+  caller's interactive shell) if the file is being interpreted directly by
+  zsh rather than run as its own bash process.
+- `install-release.sh` and `install-release.ps1` disagreed on `.zip`
+  case-sensitivity (bash: case-sensitive glob; PowerShell: case-insensitive
+  `ToLowerInvariant`). Bash side now lowercases before comparing (via `tr`,
+  not bash 4+'s `${VAR,,}` — macOS ships bash 3.2 by default, which lacks
+  it).
+- `.github/workflows/release.yml`'s `versions.json` check only validated
+  that a key existed for the tag's version, never that its *value* actually
+  agreed with `manifest.json`'s `minAppVersion` — despite the step's own log
+  line claiming the files "agree." `minAppVersion` itself also had no
+  null/empty check. Both are now validated explicitly, failing loudly on
+  either a missing `minAppVersion` or a `versions.json` entry whose value
+  doesn't match it.
+
+**Fixed — documentation:**
+- This same DECISIONS.md entry (2026-09-10, below) previously claimed the
+  version-derivation regex "strips a leading `v` if present (no-op if
+  absent)" and would "work unmodified against a future bare tag" — false;
+  the regex hard-requires the `v`. Corrected, since the original wording
+  would have misled a future community-store submission attempt into
+  leaving the regex untouched.
+- CLAUDE.md's new "Deploying to a test vault" bullet for the install-release
+  scripts self-contradicted within two sentences (claimed the release must
+  be "already-extracted," then said the source argument accepts a `.zip`
+  directly). Corrected, and updated to reflect the Linux fix above.
+
+**Fixed — partial, scoped to the highest-leverage spot:** the plugin id
+(`"mindmap-view"`) and its 3-file bundle were hardcoded independently across
+6-9 locations (this was independently flagged by four separate review
+angles). `.github/workflows/release.yml` now derives `PLUGIN_ID` via
+`jq -r .id manifest.json` (cheap and safe there — `jq` is already a
+dependency of that job, and `manifest.json` is guaranteed present in the
+checked-out repo) instead of hardcoding it three times over. The four
+standalone scripts (`deploy.sh`/`.ps1`, `install-release.sh`/`.ps1`) still
+hardcode it: `install-release.*` are explicitly designed to work on a
+machine that may not have this repo checked out at all, so deriving the id
+from a JSON file there would mean either a new parsing dependency or
+reading it from whatever release folder happens to be passed in (not
+guaranteed reliable at that point in the script) — judged not worth the
+added complexity for an event (a plugin id rename) that's rare and, when it
+happens, touches `manifest.json` itself anyway. If the id is ever renamed,
+these four scripts' `PLUGIN_ID` line needs updating by hand — flagged here
+for that future search.
+
+**Deliberately left as-is:** the Obsidian quit/copy/reopen sequence
+duplicated near-verbatim across `deploy.sh`, `deploy.ps1`,
+`install-release.sh`, `install-release.ps1` (flagged by 3 review angles).
+Extracting it into a shared helper per platform is a reasonable future
+cleanup, but each script is short and the logic is stable; introducing a
+sourced/dot-included shared file adds its own indirection that didn't seem
+worth it alongside the correctness fixes above. Left as a known,
+documented duplication rather than a silent one.
+
+**Also simplified (efficiency findings):** the zero-cost tag-format
+validation now runs *before* the (expensive, full-history) checkout step,
+instead of after — a malformed tag now fails in under a second instead of
+paying for a full clone first. The release-notes file is now handed to
+`gh release create --notes-file` directly instead of being read back via
+`$(cat ...)` in a separate step — one step and one round-trip fewer, same
+result.
+
+**Verification:** `npm test` still 431/431, `tsc`/production build clean,
+workflow YAML parses, the manifest/versions.json validation and zip
+assembly logic re-run under real bash against the real repo files (positive
+and negative cases, including a simulated stale `versions.json` value),
+`install-release.sh`'s scenario battery re-run against the updated file, the
+symlink and `source`-under-zsh fixes for `deploy.sh` empirically
+re-verified (the zsh case confirmed to exit safely without killing the
+calling shell). No tag was pushed and no GitHub release was created.
+
 ## 2026-09-10 — Tag-triggered GitHub Actions release pipeline + install-release scripts
 
 **Context:** releases were entirely manual (build locally, attach files to a
@@ -30,13 +124,15 @@ repository.
 **Choice — `v` prefix vs. Obsidian's community-plugin convention:**
 Obsidian's community-plugin updater expects a release's tag to equal
 `manifest.json`'s bare version with no `v` (e.g. `1.0.0`). The user's own
-tags keep the `v` prefix for their own manual-install workflow. The
-version-derivation logic strips a leading `v` if present (no-op if absent),
-so the *same* workflow would also work unmodified against a future bare
-`X.Y.Z` tag — but the *trigger* only matches `v*` today, matching the user's
-stated convention and avoiding speculative scope. If/when this repo submits
-to the community-plugin store, that specific release needs its own
-unprefixed tag (or the trigger list gets a one-line addition then) — not
+tags keep the `v` prefix for their own manual-install workflow. The trigger
+matches `v*` only, and the version-derivation regex
+(`^v([0-9]+\.[0-9]+\.[0-9]+)$`) *requires* that `v` — it has no
+absent-prefix branch, so it does **not** work unmodified against a future
+bare `X.Y.Z` tag (an earlier version of this entry claimed otherwise; that
+was wrong — a subsequent review caught the mismatch between this doc and
+the actual regex). If/when this repo submits to the community-plugin store,
+that specific release needs both the trigger *and* the regex widened to
+accept a bare tag (or a second, dedicated bare-tag trigger added) — not
 solved now, tracked here and in SUBMISSION-CHECKLIST.md.
 
 **Choice — release contents:** the zip (`mindmap-view-vX.Y.Z.zip`) contains

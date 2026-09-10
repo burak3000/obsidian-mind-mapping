@@ -5,11 +5,39 @@
 # Windows equivalent: scripts/deploy.ps1 — keep both in sync if the deploy
 # steps change.
 #
+# Must be *run* (./scripts/deploy.sh or `bash scripts/deploy.sh`), not
+# `source`d — it changes shell options (set -euo pipefail) and locates
+# itself via BASH_SOURCE, neither of which is safe in an interactive shell,
+# and `source`ing it under zsh bypasses the #!/usr/bin/env bash line
+# entirely (zsh runs the file's contents itself, not bash), so BASH_SOURCE
+# isn't reliably populated there either. Guarded below.
+#
 # Usage: scripts/deploy.sh [VAULT_DIR]
 #   VAULT_DIR   Optional. Overrides the default target vault folder.
+
+if [[ -n "${ZSH_VERSION:-}" ]]; then
+	echo "Error: run this script directly (e.g. './scripts/deploy.sh'), don't source it into zsh." >&2
+	return 1 2>/dev/null || exit 1
+fi
+
 set -euo pipefail
 
-REPO_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")/.." && pwd)"
+# Resolve this script's real directory, following symlinks — a plain
+# dirname/BASH_SOURCE lookup resolves to the *symlink's* own location, not
+# the repo, if this script is invoked through a symlink (e.g. a `~/bin`
+# convenience alias).
+_resolve_script_dir() {
+	local src="${BASH_SOURCE[0]}"
+	while [[ -L "$src" ]]; do
+		local dir
+		dir="$(cd -P "$(dirname "$src")" && pwd)"
+		src="$(readlink "$src")"
+		[[ "$src" != /* ]] && src="$dir/$src"
+	done
+	cd -P "$(dirname "$src")" && pwd
+}
+
+REPO_DIR="$(cd "$(_resolve_script_dir)/.." && pwd)"
 PLUGIN_ID="mindmap-view"
 VAULT_DIR="${1:-/Users/burakucbinli/Library/Mobile Documents/iCloud~md~obsidian/Documents/Tiyatro}"
 PLUGIN_DIR="$VAULT_DIR/.obsidian/plugins/$PLUGIN_ID"
