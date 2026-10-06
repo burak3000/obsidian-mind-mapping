@@ -35,6 +35,10 @@ describe("attachmentFolderPath", () => {
 		expect(attachmentFolderPath("notes/maps", "MyMap")).toBe("notes/maps/MyMap_attachments");
 	});
 
+	it("treats Obsidian's vault-root parent path \"/\" as the root (no leading slash)", () => {
+		expect(attachmentFolderPath("/", "MyMap")).toBe("MyMap_attachments");
+	});
+
 	it("never doubles up slashes even if mapParentPath has a trailing slash", () => {
 		expect(attachmentFolderPath("notes/maps/", "MyMap")).toBe("notes/maps/MyMap_attachments");
 	});

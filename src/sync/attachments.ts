@@ -30,7 +30,9 @@ export function joinVaultPath(...segments: string[]): string {
 	return segments
 		.filter((segment) => segment.length > 0)
 		.join("/")
-		.replace(/\/+/g, "/");
+		.replace(/\/+/g, "/")
+		// Obsidian reports the vault root's `TFolder.path` as "/", so a root-level map's parent path would otherwise yield "/Foo_attachments". `createFolder` tolerates the leading slash but `getAbstractFileByPath` doesn't, so the folder created on first paste could never be found again (every later paste failed with "couldn't create the attachments folder").
+		.replace(/^\/+|\/+$/g, "");
 }
 
 /** Finds or creates a folder, preferring the folder returned by creation over an immediate cache lookup. */
