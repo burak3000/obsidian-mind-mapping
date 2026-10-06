@@ -1,5 +1,30 @@
 import { describe, expect, it } from "vitest";
-import { attachmentFolderPath, buildAttachmentEmbed, dedupeAttachmentName, sanitizedAttachmentFolderName } from "../src/sync/attachments";
+import { attachmentFolderPath, buildAttachmentEmbed, dedupeAttachmentName, ensureFolder, sanitizedAttachmentFolderName } from "../src/sync/attachments";
+
+describe("ensureFolder", () => {
+	it("uses the created folder when the path lookup has not updated yet", async () => {
+		const created = { kind: "folder" };
+		const getFolder = (file: unknown): file is typeof created =>
+			typeof file === "object" && file !== null && "kind" in file && file.kind === "folder";
+		const getAbstractFileByPath = () => null;
+		const createFolder = async () => created;
+
+		await expect(ensureFolder("Map_attachments", getAbstractFileByPath, createFolder, getFolder)).resolves.toBe(created);
+	});
+
+	it("re-checks the path when creation fails because another caller created it", async () => {
+		const created = { kind: "folder" };
+		const getFolder = (file: unknown): file is typeof created =>
+			typeof file === "object" && file !== null && "kind" in file && file.kind === "folder";
+		let lookups = 0;
+		const getAbstractFileByPath = () => (++lookups === 1 ? null : created);
+		const createFolder = async () => {
+			throw new Error("already exists");
+		};
+
+		await expect(ensureFolder("Map_attachments", getAbstractFileByPath, createFolder, getFolder)).resolves.toBe(created);
+	});
+});
 
 describe("attachmentFolderPath", () => {
 	it("root-level map (mapParentPath === \"\") returns just the attachments folder name", () => {
