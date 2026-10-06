@@ -194,6 +194,12 @@ export function normalizeUrlTarget(target: string): string {
 	return URL_SCHEME_RE.test(target) ? target : `https://${target}`;
 }
 
+/** Strips one pair of wrapping double quotes (and surrounding whitespace) — Windows' "Copy as path" yields `"C:\\dir\\file"` — so the target is a plain path. */
+export function stripSurroundingQuotes(target: string): string {
+	const t = target.trim();
+	return t.length >= 2 && t.startsWith('"') && t.endsWith('"') ? t.slice(1, -1).trim() : t;
+}
+
 const WINDOWS_ABS_RE = /^[a-zA-Z]:[\\/]/;
 
 /** Whether `target` is an absolute filesystem path (`/…`, `~/…`, or `C:\…`/`C:/…`) rather than a vault-relative note/attachment reference — the signal used to route a "Link" target to the OS (open the file in its default app, or the folder in the system file browser) instead of Obsidian's own vault-relative link resolution. */
