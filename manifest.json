@@ -1,7 +1,7 @@
 {
 	"id": "mindmap-view",
 	"name": "Mind Map View",
-	"version": "0.0.2",
+	"version": "0.0.3",
 	"minAppVersion": "1.4.0",
 	"description": "Traditional desktop-mind-mapper-style mind mapping view for markdown files, with true bidirectional sync.",
 	"author": "Burak Ucbinli",
