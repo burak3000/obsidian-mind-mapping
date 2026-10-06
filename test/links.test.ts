@@ -2,6 +2,7 @@ import { describe, expect, it } from "vitest";
 import {
 	parseTextSegments,
 	getDisplayText,
+	stripSurroundingQuotes,
 	getSoleLink,
 	parseEmbeds,
 	getImageEmbed,
@@ -204,5 +205,15 @@ describe("getImageEmbed (plan item 07: image display)", () => {
 
 	it("returns the first image embed when there are several", () => {
 		expect(getImageEmbed("![[a.png]] ![[b.png]]")?.target).toBe("a.png");
+	});
+});
+
+describe("stripSurroundingQuotes", () => {
+	it("strips Windows 'Copy as path' quotes", () => {
+		expect(stripSurroundingQuotes('"C:\\Data Analysis\\test\\test"')).toBe("C:\\Data Analysis\\test\\test");
+	});
+	it("leaves unquoted targets alone", () => {
+		expect(stripSurroundingQuotes("C:\\a")).toBe("C:\\a");
+		expect(stripSurroundingQuotes('"')).toBe('"');
 	});
 });

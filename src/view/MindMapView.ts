@@ -23,6 +23,7 @@ import {
 	isAbsoluteFilesystemPath,
 	normalizeUrlTarget,
 	expandHomePath,
+	stripSurroundingQuotes,
 	removeLinkOccurrence,
 } from "../model/links";
 import { MindMapModel, MindNode } from "../model/types";
@@ -438,6 +439,7 @@ export class MindMapView extends TextFileView implements ControllerListener {
 	 * it (the originally reported bug).
 	 */
 	private openLink(kind: LinkKind, target: string): void {
+		target = stripSurroundingQuotes(target);
 		if (isUrlTarget(target)) {
 			this.openExternalUrl(target);
 			return;
@@ -454,6 +456,7 @@ export class MindMapView extends TextFileView implements ControllerListener {
 
 	/** R-image-display, decision A: clicking a node's image thumbnail opens the image — in a new tab, unlike `openLink`, so the mind map stays open (same reasoning as "Go to note section" always opening in a new tab). Same target-shape routing as `openLink`. */
 	private openImage(kind: LinkKind, target: string): void {
+		target = stripSurroundingQuotes(target);
 		if (isUrlTarget(target)) {
 			this.openExternalUrl(target);
 			return;
@@ -608,6 +611,9 @@ export class MindMapView extends TextFileView implements ControllerListener {
 			},
 			onAddLink: (kind, target, label) => {
 				if (!this.controller) return currentItems();
+				const unquoted = stripSurroundingQuotes(target);
+				if (label === target) label = unquoted;
+				target = unquoted;
 				// A URL or absolute filesystem path is always built as an mdlink,
 				// regardless of which "Link type" the user left selected — a
 				// wikilink pointed at either (e.g. Target left as "Wikilink" while
