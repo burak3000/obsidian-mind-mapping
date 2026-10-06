@@ -37,7 +37,7 @@ import { LayoutConfig } from "../layout/layoutEngine";
 import { resolveGoToTarget } from "../sync/goToSection";
 import { parseExternalPaste } from "../sync/parseExternalPaste";
 import { decidePasteSource } from "../sync/clipboardPaste";
-import { buildAttachmentEmbed, dedupeAttachmentName, joinVaultPath, sanitizedAttachmentFolderName } from "../sync/attachments";
+import { buildAttachmentEmbed, dedupeAttachmentName, ensureFolder, joinVaultPath, sanitizedAttachmentFolderName } from "../sync/attachments";
 
 export const VIEW_TYPE_MINDMAP = "mindmap-view";
 
@@ -1058,16 +1058,12 @@ export class MindMapView extends TextFileView implements ControllerListener {
 	 * path instead.
 	 */
 	private async ensureAttachmentFolder(fullFolderPath: string): Promise<TFolder | null> {
-		const existing = this.app.vault.getAbstractFileByPath(fullFolderPath);
-		if (!existing) {
-			try {
-				await this.app.vault.createFolder(fullFolderPath);
-			} catch {
-				// Likely already exists (race) — ignore and re-fetch below.
-			}
-		}
-		const folder = this.app.vault.getAbstractFileByPath(fullFolderPath);
-		return folder instanceof TFolder ? folder : null;
+		return ensureFolder(
+			fullFolderPath,
+			(path) => this.app.vault.getAbstractFileByPath(path),
+			(path) => this.app.vault.createFolder(path),
+			(file): file is TFolder => file instanceof TFolder,
+		);
 	}
 
 	// --- Search ---

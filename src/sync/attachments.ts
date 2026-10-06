@@ -33,6 +33,26 @@ export function joinVaultPath(...segments: string[]): string {
 		.replace(/\/+/g, "/");
 }
 
+/** Finds or creates a folder, preferring the folder returned by creation over an immediate cache lookup. */
+export async function ensureFolder<T>(
+	path: string,
+	getAbstractFileByPath: (path: string) => unknown,
+	createFolder: (path: string) => Promise<unknown>,
+	isFolder: (file: unknown) => file is T,
+): Promise<T | null> {
+	const existing = getAbstractFileByPath(path);
+	if (existing == null) {
+		try {
+			const created = await createFolder(path);
+			if (isFolder(created)) return created;
+		} catch {
+			// The folder may have been created concurrently; re-check below.
+		}
+	}
+	const folder = getAbstractFileByPath(path);
+	return isFolder(folder) ? folder : null;
+}
+
 /**
  * Replaces whitespace and any other character that would need escaping or
  * encoding inside a bare (unbracketed) CommonMark link destination with a
