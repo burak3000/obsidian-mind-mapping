@@ -1,6 +1,6 @@
 {
 	"name": "mindmap-view",
-	"version": "0.0.1",
+	"version": "0.0.2",
 	"description": "Traditional desktop-mind-mapper-style mind mapping view for Obsidian markdown files.",
 	"type": "module",
 	"private": true,
