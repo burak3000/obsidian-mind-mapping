@@ -431,16 +431,26 @@
 	box-shadow: var(--shadow-l, 0 8px 32px rgba(0, 0, 0, 0.4));
 }
 
-/* Title bar: bleeds out over the modal's padding to the dialog's top/left/right edges, so the whole top strip is the drag handle, not just the text. */
+/* Title bar: the dialog has no padding of its own (the content area re-adds it below), so the title element is flush with the top/left/right edges and the whole strip is the drag handle. */
+.mm-link-modal {
+	padding: 0;
+}
+
+.mm-link-modal .modal-content {
+	padding: 0 var(--size-4-4, 16px) var(--size-4-4, 16px);
+}
+
 .mm-link-modal-title {
 	cursor: grab;
 	user-select: none;
 	touch-action: none;
-	margin: calc(-1 * var(--size-4-4, 16px)) calc(-1 * var(--size-4-4, 16px)) var(--size-4-3, 12px);
+	margin: 0 0 var(--size-4-3, 12px);
 	padding: var(--size-4-4, 16px) calc(var(--size-4-4, 16px) + 28px) var(--size-4-3, 12px) var(--size-4-4, 16px);
 	border-bottom: 1px solid var(--background-modifier-border);
 	background: var(--background-secondary);
 	border-radius: var(--modal-radius, 8px) var(--modal-radius, 8px) 0 0;
+	font-size: var(--font-ui-large, 18px);
+	font-weight: var(--font-semibold, 600);
 }
 
 /* While dragging: translucent, so the nodes behind the dialog can be read. */

@@ -118,8 +118,11 @@ export class LinkModal extends Modal {
 		this.modalEl.addClass("mm-link-modal");
 		// Floating dialog: no dimming backdrop, so the map stays readable behind it.
 		this.containerEl.addClass("mm-link-modal-container");
-		const title = contentEl.createEl("h3", { text: "Links & relations", cls: "mm-link-modal-title" });
-		this.enableDragging(title);
+		// Obsidian's own title element (a direct child of the modal, above `contentEl`), so the
+		// title bar can sit flush against the dialog's top edge — see `.mm-link-modal` in styles.css.
+		this.setTitle("Links & relations");
+		this.titleEl.addClass("mm-link-modal-title");
+		this.enableDragging(this.titleEl);
 
 		this.itemsContainer = contentEl.createDiv({ cls: "mm-link-items" });
 		this.renderItems();
