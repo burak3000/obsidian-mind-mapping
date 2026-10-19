@@ -24,6 +24,7 @@ import {
 	normalizeUrlTarget,
 	expandHomePath,
 	stripSurroundingQuotes,
+	decodeVaultLinkTarget,
 	removeLinkOccurrence,
 } from "../model/links";
 import { MindMapModel, MindNode } from "../model/types";
@@ -451,7 +452,7 @@ export class MindMapView extends TextFileView implements ControllerListener {
 		// wikilink, or an mdlink whose target isn't a URL/absolute path: a
 		// vault-relative reference (note, attachment, etc.), resolved the
 		// same way regardless of `kind`.
-		this.app.workspace.openLinkText(target, this.file?.path ?? "", false);
+		this.app.workspace.openLinkText(decodeVaultLinkTarget(kind, target), this.file?.path ?? "", false);
 	}
 
 	/** R-image-display, decision A: clicking a node's image thumbnail opens the image — in a new tab, unlike `openLink`, so the mind map stays open (same reasoning as "Go to note section" always opening in a new tab). Same target-shape routing as `openLink`. */
@@ -465,7 +466,7 @@ export class MindMapView extends TextFileView implements ControllerListener {
 			this.openFilesystemPath(target);
 			return;
 		}
-		this.app.workspace.openLinkText(target, this.file?.path ?? "", true);
+		this.app.workspace.openLinkText(decodeVaultLinkTarget(kind, target), this.file?.path ?? "", true);
 	}
 
 	/** R-image-display: resolves a node's image embed target to a displayable URL — remote URLs are used as-is; vault-relative targets go through Obsidian's native attachment resolution (`getFirstLinkpathDest` + `getResourcePath`), same mechanism a normal embedded image in a markdown note uses. Null (embed present but unresolvable, or no embed at all) leaves the renderer's placeholder/missing-glyph showing. */
@@ -473,7 +474,7 @@ export class MindMapView extends TextFileView implements ControllerListener {
 		const embed = getImageEmbed(node.text);
 		if (!embed) return null;
 		if (/^[a-z][a-z0-9+.-]*:\/\//i.test(embed.target)) return embed.target;
-		const dest = this.app.metadataCache.getFirstLinkpathDest(embed.target, this.file?.path ?? "");
+		const dest = this.app.metadataCache.getFirstLinkpathDest(decodeVaultLinkTarget(embed.kind, embed.target), this.file?.path ?? "");
 		return dest ? this.app.vault.getResourcePath(dest) : null;
 	}
 

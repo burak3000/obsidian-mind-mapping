@@ -3,6 +3,7 @@ import {
 	parseTextSegments,
 	getDisplayText,
 	stripSurroundingQuotes,
+	decodeVaultLinkTarget,
 	getSoleLink,
 	parseEmbeds,
 	getImageEmbed,
@@ -215,5 +216,24 @@ describe("stripSurroundingQuotes", () => {
 	it("leaves unquoted targets alone", () => {
 		expect(stripSurroundingQuotes("C:\\a")).toBe("C:\\a");
 		expect(stripSurroundingQuotes('"')).toBe('"');
+	});
+});
+
+describe("decodeVaultLinkTarget", () => {
+	it("decodes percent-encoded markdown-link targets", () => {
+		expect(decodeVaultLinkTarget("mdlink", "Performance%20Bug%20Analysis%20Skillset.md")).toBe(
+			"Performance Bug Analysis Skillset.md",
+		);
+		expect(decodeVaultLinkTarget("mdlink", "folder%20a/Note%20b.md#Head%20ing")).toBe("folder a/Note b.md#Head ing");
+	});
+	it("unwraps <…> targets", () => {
+		expect(decodeVaultLinkTarget("mdlink", "<My Note.md>")).toBe("My Note.md");
+	});
+	it("leaves wikilink targets untouched", () => {
+		expect(decodeVaultLinkTarget("wikilink", "100%20 plan")).toBe("100%20 plan");
+	});
+	it("leaves malformed escapes and plain targets alone", () => {
+		expect(decodeVaultLinkTarget("mdlink", "100%.md")).toBe("100%.md");
+		expect(decodeVaultLinkTarget("mdlink", "plain.md")).toBe("plain.md");
 	});
 });

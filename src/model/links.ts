@@ -200,6 +200,28 @@ export function stripSurroundingQuotes(target: string): string {
 	return t.length >= 2 && t.startsWith('"') && t.endsWith('"') ? t.slice(1, -1).trim() : t;
 }
 
+/**
+ * The vault-relative path a markdown-link target (`[label](target)`) refers
+ * to. Markdown links percent-encode spaces and other special characters
+ * (`My%20Note.md`, which is what Obsidian itself writes for a link to
+ * `My Note.md`), and may wrap the target in `<…>` to allow raw spaces; Obsidian's
+ * `openLinkText`/`getFirstLinkpathDest` take a literal path, so passing the
+ * raw target opened (created) a blank note literally named `My%20Note`.
+ * Wikilink targets are literal already and returned unchanged. A malformed
+ * escape (a stray `%`, as in `100%.md`) leaves the target undecoded.
+ */
+export function decodeVaultLinkTarget(kind: LinkKind, target: string): string {
+	if (kind !== "mdlink") return target;
+	let t = target.trim();
+	if (t.length >= 2 && t.startsWith("<") && t.endsWith(">")) t = t.slice(1, -1).trim();
+	if (!t.includes("%")) return t;
+	try {
+		return decodeURIComponent(t);
+	} catch {
+		return t;
+	}
+}
+
 const WINDOWS_ABS_RE = /^[a-zA-Z]:[\\/]/;
 
 /** Whether `target` is an absolute filesystem path (`/…`, `~/…`, or `C:\…`/`C:/…`) rather than a vault-relative note/attachment reference — the signal used to route a "Link" target to the OS (open the file in its default app, or the folder in the system file browser) instead of Obsidian's own vault-relative link resolution. */
