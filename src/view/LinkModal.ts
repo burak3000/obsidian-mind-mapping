@@ -34,7 +34,16 @@ const BADGE_LABEL: Record<LinkItemBadge, string> = {
 	unresolved: "Unresolved link",
 };
 
+/** A vault file offered by the "Link" target autocomplete. `id`/`label` are both the exact text that ends up as the link target (so what you see in the list is what gets inserted); `displayLabel` is the default link text when the user leaves "Display text" empty. */
+export interface LinkSuggestion {
+	id: string;
+	label: string;
+	displayLabel: string;
+}
+
 export interface LinkModalOptions {
+	/** Vault files offered by the "Link" target autocomplete for the given link kind — a path relative to the current file for "URL or file path", the shortest unambiguous note name for "Wikilink". Called once per kind per modal lifetime. */
+	getLinkSuggestions: (kind: LinkKind) => LinkSuggestion[];
 	/** Every relation/link already on the node (R3), document/text order. Passed fresh at open time; refreshed thereafter by this modal itself using each on* callback's return value. */
 	items: LinkItem[];
 	/** R4: every vault `.md` file selectable in the "pick a document" combobox — `CURRENT_DOCUMENT_ID` first/pre-selected, since relating within the current document is the common case. */
@@ -54,6 +63,9 @@ export interface LinkModalOptions {
 }
 
 type AddMode = "relation" | "link";
+
+/** Drag offset of the floating dialog, remembered across opens within a session so it reopens where the user last left it (e.g. parked beside the nodes they're relating). */
+let lastDragOffset = { x: 0, y: 0 };
 
 /**
  * Ctrl/Cmd+Shift+L (R3/R5, redesigned from the earlier single-edit "Edit
@@ -85,6 +97,9 @@ export class LinkModal extends Modal {
 	private linkLabel = "";
 	private linkKind: LinkKind = "mdlink";
 	private linkTarget = "";
+	/** Default link text for the autocomplete suggestion currently picked (empty once the user types over it). */
+	private linkPickedLabel = "";
+	private linkSuggestionCache = new Map<LinkKind, LinkSuggestion[]>();
 
 	private itemsContainer!: HTMLElement;
 	private relationForm!: HTMLElement;
@@ -101,7 +116,10 @@ export class LinkModal extends Modal {
 	onOpen(): void {
 		const { contentEl } = this;
 		this.modalEl.addClass("mm-link-modal");
-		contentEl.createEl("h3", { text: "Links & relations" });
+		// Floating dialog: no dimming backdrop, so the map stays readable behind it.
+		this.containerEl.addClass("mm-link-modal-container");
+		const title = contentEl.createEl("h3", { text: "Links & relations", cls: "mm-link-modal-title" });
+		this.enableDragging(title);
 
 		this.itemsContainer = contentEl.createDiv({ cls: "mm-link-items" });
 		this.renderItems();
@@ -116,13 +134,51 @@ export class LinkModal extends Modal {
 		this.renderLinkForm(this.linkForm);
 
 		this.updateFormVisibility();
+	}
 
-		new Setting(contentEl).addButton((btn) =>
-			btn
-				.setButtonText("Close")
-				.setCta()
-				.onClick(() => this.close())
-		);
+	/**
+	 * Makes the dialog draggable by its title. The offset is applied as a CSS
+	 * `translate` on top of Obsidian's centering (no layout work, no
+	 * re-render), clamped so the dialog can never be dragged fully off-screen,
+	 * and the dialog turns translucent for the duration of the drag so
+	 * whatever is behind it can be read.
+	 */
+	private enableDragging(handle: HTMLElement): void {
+		const modalEl = this.modalEl;
+		let offset = { ...lastDragOffset };
+		const apply = () => {
+			modalEl.style.translate = `${offset.x}px ${offset.y}px`;
+		};
+		apply();
+
+		handle.addEventListener("pointerdown", (evt) => {
+			if (evt.button !== 0) return;
+			evt.preventDefault();
+			const startX = evt.clientX;
+			const startY = evt.clientY;
+			const startOffset = { ...offset };
+			const rect = modalEl.getBoundingClientRect();
+			const margin = 40; // keep at least this much of the dialog on-screen
+			handle.setPointerCapture(evt.pointerId);
+			modalEl.addClass("mm-link-modal-dragging");
+
+			const onMove = (e: PointerEvent) => {
+				const dx = Math.min(Math.max(e.clientX - startX, margin - rect.right), window.innerWidth - margin - rect.left);
+				const dy = Math.min(Math.max(e.clientY - startY, -rect.top), window.innerHeight - margin - rect.top);
+				offset = { x: startOffset.x + dx, y: startOffset.y + dy };
+				apply();
+			};
+			const onUp = () => {
+				handle.removeEventListener("pointermove", onMove);
+				handle.removeEventListener("pointerup", onUp);
+				handle.removeEventListener("pointercancel", onUp);
+				modalEl.removeClass("mm-link-modal-dragging");
+				lastDragOffset = { ...offset };
+			};
+			handle.addEventListener("pointermove", onMove);
+			handle.addEventListener("pointerup", onUp);
+			handle.addEventListener("pointercancel", onUp);
+		});
 	}
 
 	onClose(): void {
@@ -200,10 +256,12 @@ export class LinkModal extends Modal {
 			.setName("Node")
 			.setDesc("Search for a node by its text — draws a same-document relation arrow, or a cross-document one if the document above isn't this one.");
 		nodeSetting.settingEl.addClass("mm-relation-setting");
-		this.nodeComboContainer = nodeSetting.controlEl.createDiv();
+		this.nodeComboContainer = nodeSetting.controlEl.createDiv({ cls: "mm-relation-combobox-host" });
 		this.renderNodeCombobox(this.nodeComboContainer);
 
-		new Setting(container).addButton((btn) =>
+		const addRow = new Setting(container);
+		this.addCloseButton(addRow);
+		addRow.addButton((btn) =>
 			btn
 				.setButtonText("Add relation")
 				.setCta()
@@ -310,36 +368,88 @@ export class LinkModal extends Modal {
 			})
 		);
 
-		new Setting(container).setName("Link type").addDropdown((dropdown) =>
-			dropdown
-				.addOption("wikilink", "Wikilink (note in this vault)")
-				.addOption("mdlink", "URL or file path")
-				.setValue(this.linkKind)
-				.onChange((v) => {
-					this.linkKind = v as LinkKind;
-				})
+		const typeSetting = new Setting(container).setName("Link type");
+		typeSetting.settingEl.addClass("mm-relation-setting");
+		this.renderLinkKindRadio(typeSetting.controlEl);
+
+		const targetSetting = new Setting(container)
+			.setName("Target")
+			.setDesc(
+				this.linkKind === "mdlink"
+					? "Type a URL, an absolute file/folder path, or search for a vault file — picked files are linked by their path relative to this document."
+					: "Search for a note in this vault — linked by its note name."
+			);
+		targetSetting.settingEl.addClass("mm-relation-setting");
+		const targetHost = targetSetting.controlEl.createDiv({ cls: "mm-relation-combobox-host" });
+		this.renderSearchCombobox<LinkSuggestion>(
+			targetHost,
+			() => this.getLinkSuggestions(this.linkKind),
+			this.linkKind === "mdlink" ? "URL, file path, or search vault files…" : "Search notes…",
+			this.linkKind === "mdlink" ? "No matching vault files — the text will be used as typed" : "No matching notes — the text will be used as typed",
+			(opt) => {
+				this.linkTarget = opt.id;
+				this.linkPickedLabel = opt.displayLabel;
+			},
+			(value) => {
+				this.linkTarget = value;
+				this.linkPickedLabel = "";
+			},
+			this.linkTarget
 		);
 
-		new Setting(container).setName("Target").setDesc("A note title for a wikilink; a URL (with or without https://), an absolute file path, or a folder path for a URL/file-path link — opens in the browser, default app, or file browser respectively.").addText((text) =>
-			text.setValue(this.linkTarget).onChange((v) => {
-				this.linkTarget = v;
-			})
-		);
-
-		new Setting(container).addButton((btn) =>
+		const addRow = new Setting(container);
+		this.addCloseButton(addRow);
+		addRow.addButton((btn) =>
 			btn
 				.setButtonText("Add link")
 				.setCta()
 				.onClick(() => {
 					if (!this.linkTarget.trim()) return;
-					this.items = this.opts.onAddLink(this.linkKind, this.linkTarget.trim(), this.linkLabel.trim() || this.linkTarget.trim());
+					const target = this.linkTarget.trim();
+					this.items = this.opts.onAddLink(this.linkKind, target, this.linkLabel.trim() || this.linkPickedLabel || target);
 					this.renderItems();
 					this.linkLabel = "";
 					this.linkTarget = "";
+					this.linkPickedLabel = "";
 					this.linkForm.empty();
 					this.renderLinkForm(this.linkForm);
 				})
 		);
+	}
+
+	/** Close sits right beside the form's Add button (same row, added first so Add ends up rightmost); the dialog has no separate footer row. */
+	private addCloseButton(row: Setting): void {
+		row.addButton((btn) => btn.setButtonText("Close").onClick(() => this.close()));
+	}
+
+	/** "URL or file path" (default) / "Wikilink (note in this vault)". Switching kind drops the typed/picked target — a relative path and a note name aren't interchangeable — and re-renders the form so the autocomplete and hints match. */
+	private renderLinkKindRadio(container: HTMLElement): void {
+		const wrapper = container.createDiv({ cls: "mm-link-mode-radio" });
+		const makeOption = (value: LinkKind, text: string) => {
+			const label = wrapper.createEl("label", { cls: "mm-link-mode-option" });
+			const input = label.createEl("input", { type: "radio", attr: { name: "mm-link-kind", value } });
+			input.checked = value === this.linkKind;
+			input.addEventListener("change", () => {
+				if (!input.checked || this.linkKind === value) return;
+				this.linkKind = value;
+				this.linkTarget = "";
+				this.linkPickedLabel = "";
+				this.linkForm.empty();
+				this.renderLinkForm(this.linkForm);
+			});
+			label.createSpan({ text });
+		};
+		makeOption("mdlink", "URL or file path");
+		makeOption("wikilink", "Wikilink (note in this vault)");
+	}
+
+	private getLinkSuggestions(kind: LinkKind): LinkSuggestion[] {
+		let cached = this.linkSuggestionCache.get(kind);
+		if (!cached) {
+			cached = this.opts.getLinkSuggestions(kind);
+			this.linkSuggestionCache.set(kind, cached);
+		}
+		return cached;
 	}
 
 	/**
@@ -359,7 +469,7 @@ export class LinkModal extends Modal {
 		placeholder: string,
 		emptyText: string,
 		onSelect: (opt: T) => void,
-		onTyping: () => void,
+		onTyping: (value: string) => void,
 		initialValue: string
 	): void {
 		const wrapper = container.createDiv({ cls: "mm-relation-combobox" });
@@ -416,7 +526,7 @@ export class LinkModal extends Modal {
 
 		input.addEventListener("focus", () => openList(input.value));
 		input.addEventListener("input", () => {
-			onTyping();
+			onTyping(input.value);
 			openList(input.value);
 		});
 		input.addEventListener("blur", () => closeList());

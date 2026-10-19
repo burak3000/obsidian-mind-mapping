@@ -4,6 +4,8 @@ import {
 	getDisplayText,
 	stripSurroundingQuotes,
 	decodeVaultLinkTarget,
+	encodeLinkPath,
+	relativeVaultPath,
 	getSoleLink,
 	parseEmbeds,
 	getImageEmbed,
@@ -235,5 +237,31 @@ describe("decodeVaultLinkTarget", () => {
 	it("leaves malformed escapes and plain targets alone", () => {
 		expect(decodeVaultLinkTarget("mdlink", "100%.md")).toBe("100%.md");
 		expect(decodeVaultLinkTarget("mdlink", "plain.md")).toBe("plain.md");
+	});
+});
+
+describe("relativeVaultPath", () => {
+	it("same folder", () => {
+		expect(relativeVaultPath("Notes/A.md", "Notes/B.md")).toBe("B.md");
+	});
+	it("into a subfolder", () => {
+		expect(relativeVaultPath("Notes/A.md", "Notes/sub/C.md")).toBe("sub/C.md");
+	});
+	it("up and across", () => {
+		expect(relativeVaultPath("Notes/deep/A.md", "Other/D.md")).toBe("../../Other/D.md");
+		expect(relativeVaultPath("Notes/A.md", "Notes2/D.md")).toBe("../Notes2/D.md");
+	});
+	it("root-level source", () => {
+		expect(relativeVaultPath("A.md", "Notes/B.md")).toBe("Notes/B.md");
+		expect(relativeVaultPath("A.md", "B.md")).toBe("B.md");
+	});
+});
+
+describe("encodeLinkPath", () => {
+	it("escapes spaces, percent and parentheses, and round-trips through decodeVaultLinkTarget", () => {
+		const p = "../My Notes/100% (draft).md";
+		const enc = encodeLinkPath(p);
+		expect(enc).toBe("../My%20Notes/100%25%20%28draft%29.md");
+		expect(decodeVaultLinkTarget("mdlink", enc)).toBe(p);
 	});
 });

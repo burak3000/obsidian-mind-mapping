@@ -25,12 +25,14 @@ import {
 	expandHomePath,
 	stripSurroundingQuotes,
 	decodeVaultLinkTarget,
+	encodeLinkPath,
+	relativeVaultPath,
 	removeLinkOccurrence,
 } from "../model/links";
 import { MindMapModel, MindNode } from "../model/types";
 import { BADGE_DEFS } from "../model/statusBadges";
 import { listNodeLinkItems, resolveRelations } from "../model/relations";
-import { LinkModal, RelationTarget, RelationTargetOption, DocumentOption } from "./LinkModal";
+import { LinkModal, LinkSuggestion, RelationTarget, RelationTargetOption, DocumentOption } from "./LinkModal";
 import { CURRENT_DOCUMENT_ID, commitForeignRelationTarget, resolveRelationTargetsForDocument } from "../sync/foreignRelation";
 import { SearchPanel } from "./SearchPanel";
 import { searchNodes } from "../model/search";
@@ -425,6 +427,29 @@ export class MindMapView extends TextFileView implements ControllerListener {
 	}
 
 	/**
+	 * Autocomplete options for the Link editor's target field — every vault
+	 * file except this map itself. "URL or file path" links are written as a
+	 * path relative to this file (the form Obsidian's own relative-path
+	 * markdown links use), percent-encoded where the markdown syntax needs
+	 * it (`decodeVaultLinkTarget` reverses that on click); wikilinks use the
+	 * shortest unambiguous note name Obsidian itself would generate.
+	 */
+	private buildLinkSuggestions(kind: LinkKind): LinkSuggestion[] {
+		const from = this.file?.path ?? "";
+		return this.app.vault
+			.getFiles()
+			.filter((f) => f.path !== from)
+			.map((f) => {
+				const value =
+					kind === "wikilink"
+						? this.app.metadataCache.fileToLinktext(f, from, true)
+						: encodeLinkPath(relativeVaultPath(from, f.path));
+				return { id: value, label: value, displayLabel: f.extension === "md" ? f.basename : f.name };
+			})
+			.sort((a, b) => a.label.localeCompare(b.label));
+	}
+
+	/**
 	 * Three target shapes, three destinations (matching the original note's
 	 * "web url / file path / folder" spec for the Link type): a URL
 	 * (`isUrlTarget` — scheme or bare domain) opens in the system browser; an
@@ -569,6 +594,7 @@ export class MindMapView extends TextFileView implements ControllerListener {
 
 		new LinkModal(this.app, {
 			items: currentItems(),
+			getLinkSuggestions: (kind) => this.buildLinkSuggestions(kind),
 			documents,
 			relationTargets,
 			getRelationTargetsForDocument: (docId) =>

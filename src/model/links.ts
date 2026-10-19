@@ -222,6 +222,26 @@ export function decodeVaultLinkTarget(kind: LinkKind, target: string): string {
 	}
 }
 
+/**
+ * `toPath` expressed relative to the folder of `fromFilePath` (both
+ * vault-relative, `/`-separated) — `Notes/A.md` → `Notes/B/C.md` is `B/C.md`,
+ * `Notes/A.md` → `Other/D.md` is `../Other/D.md`. The form Obsidian's own
+ * "relative path to file" markdown links use, so such a link keeps working
+ * as long as the two files move together.
+ */
+export function relativeVaultPath(fromFilePath: string, toPath: string): string {
+	const fromDir = fromFilePath.split("/").slice(0, -1);
+	const to = toPath.split("/");
+	let common = 0;
+	while (common < fromDir.length && common < to.length - 1 && fromDir[common] === to[common]) common++;
+	return [...Array<string>(fromDir.length - common).fill(".."), ...to.slice(common)].join("/");
+}
+
+/** Escapes a path for use as a markdown-link target: space, `%`, and parentheses (which would otherwise end the link early) — the inverse of the decoding `decodeVaultLinkTarget` does on click. */
+export function encodeLinkPath(path: string): string {
+	return path.replace(/%/g, "%25").replace(/ /g, "%20").replace(/\(/g, "%28").replace(/\)/g, "%29");
+}
+
 const WINDOWS_ABS_RE = /^[a-zA-Z]:[\\/]/;
 
 /** Whether `target` is an absolute filesystem path (`/…`, `~/…`, or `C:\…`/`C:/…`) rather than a vault-relative note/attachment reference — the signal used to route a "Link" target to the OS (open the file in its default app, or the folder in the system file browser) instead of Obsidian's own vault-relative link resolution. */

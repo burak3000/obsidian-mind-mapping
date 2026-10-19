@@ -417,6 +417,46 @@
 
 .mm-link-modal {
 	width: min(640px, 92vw);
+	min-height: min(720px, 90vh);
+	transition: opacity 120ms ease;
+}
+
+/* Floating dialog: drop the dimming backdrop so the map behind stays fully readable. The (invisible) backdrop still blocks the map underneath and closes the dialog on an outside click. */
+.mm-link-modal-container .modal-bg {
+	background: transparent;
+	opacity: 0;
+}
+
+.mm-link-modal-container .mm-link-modal {
+	box-shadow: var(--shadow-l, 0 8px 32px rgba(0, 0, 0, 0.4));
+}
+
+/* Title bar: bleeds out over the modal's padding to the dialog's top/left/right edges, so the whole top strip is the drag handle, not just the text. */
+.mm-link-modal-title {
+	cursor: grab;
+	user-select: none;
+	touch-action: none;
+	margin: calc(-1 * var(--size-4-4, 16px)) calc(-1 * var(--size-4-4, 16px)) var(--size-4-3, 12px);
+	padding: var(--size-4-4, 16px) calc(var(--size-4-4, 16px) + 28px) var(--size-4-3, 12px) var(--size-4-4, 16px);
+	border-bottom: 1px solid var(--background-modifier-border);
+	background: var(--background-secondary);
+	border-radius: var(--modal-radius, 8px) var(--modal-radius, 8px) 0 0;
+}
+
+/* While dragging: translucent, so the nodes behind the dialog can be read. */
+.mm-link-modal.mm-link-modal-dragging {
+	opacity: 0.3;
+}
+
+.mm-link-modal-dragging .mm-link-modal-title {
+	cursor: grabbing;
+}
+
+/* The node combobox host sits directly in a flex control row; without this it shrinks to its input's intrinsic width instead of filling the dialog. */
+.mm-relation-combobox-host {
+	flex: 1 1 auto;
+	width: 100%;
+	min-width: 0;
 }
 
 .mm-relation-setting {
@@ -541,4 +581,9 @@
 	padding: var(--size-4-1, 4px) 0;
 	font-size: 13px;
 	color: var(--text-muted);
+}
+
+/* Link-kind radio inside a Setting row: the row already provides spacing. */
+.mm-relation-setting .mm-link-mode-radio {
+	margin-bottom: 0;
 }
